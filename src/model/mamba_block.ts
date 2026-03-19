@@ -196,12 +196,12 @@ export class MambaBlock {
         const M = B * L;
         const R = this.dtRank;
 
-        const cache: Partial<BlockCache> & Record<string, GPUBuffer> = {};
+        const cache = {} as BlockCache;
 
         const normOut  = createEmptyStorageBuffer(d, M * dModel * 4, true);
         const normInv  = createEmptyStorageBuffer(d, M * 4,          true);
-        cache['normInv']  = normInv;
-        cache['normIn']   = xBuf;
+        cache.normInv  = normInv;
+        cache.normIn   = xBuf;
 
         {
             const params = new ArrayBuffer(16);
@@ -215,7 +215,7 @@ export class MambaBlock {
         }
 
         const inProjOut = createEmptyStorageBuffer(d, M * 2 * D * 4, true);
-        cache['normOut']   = normOut;
+        cache.normOut   = normOut;
         {
             const params = new Uint32Array([M, dModel, 2 * D]).buffer;
             const pBuf   = createUniformBuffer(d, params);
@@ -232,10 +232,10 @@ export class MambaBlock {
             enc.copyBufferToBuffer(inProjOut, M * D * 4,   zBuf,    0, M * D * 4);
             d.queue.submit([enc.finish()]);
         }
-        cache['zBuf'] = zBuf;
+        cache.zBuf = zBuf;
 
         const convOut = createEmptyStorageBuffer(d, M * D * 4, true);
-        cache['xConvIn'] = xConvIn;
+        cache.xConvIn = xConvIn;
         {
             const params = new Uint32Array([L, D, dConv, B]).buffer;
             const pBuf   = createUniformBuffer(d, params);
@@ -245,7 +245,7 @@ export class MambaBlock {
         }
 
         const siluOut = createEmptyStorageBuffer(d, M * D * 4, true);
-        cache['convOut'] = convOut;
+        cache.convOut = convOut;
         {
             const params = new Uint32Array([M * D]).buffer;
             const pBuf   = createUniformBuffer(d, params);
@@ -285,11 +285,11 @@ export class MambaBlock {
 
         const scanY      = createEmptyStorageBuffer(d, B * L * D * 4,         true);
         const hCache     = createEmptyStorageBuffer(d, 2 * B * L * D * N * 4, true);
-        cache['siluOut']    = siluOut;
-        cache['deltaFull']  = deltaFull;
-        cache['B_raw']      = B_raw;
-        cache['C_raw']      = C_raw;
-        cache['hCache']     = hCache;
+        cache.siluOut    = siluOut;
+        cache.deltaFull  = deltaFull;
+        cache.B_raw      = B_raw;
+        cache.C_raw      = C_raw;
+        cache.hCache     = hCache;
 
         {
             const params = new Uint32Array([L, N, D, B]).buffer;
@@ -364,7 +364,7 @@ export class MambaBlock {
             dispatchKernel(d, addPipeline, bgAdd, [cdiv(M * dModel, 256), 1, 1]);
         }
 
-        return { output, cache: cache as BlockCache };
+        return { output, cache };
     }
 
     parameters(): BlockParam[] {
