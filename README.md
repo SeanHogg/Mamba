@@ -63,6 +63,14 @@ Final RMSNorm → LM Head (tied embedding) → Logits
 
 ---
 
+## Documentation
+
+| Guide | Description |
+|---|---|
+| **[Getting Started](docs/getting-started.md)** | Beginner-friendly introduction — what LLMs are, how Qwen fits in, step-by-step setup, and what to do next (including [builderforce.ai](https://builderforce.ai)) |
+
+---
+
 ## Quick Start
 
 ```js
