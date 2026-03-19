@@ -1,0 +1,31 @@
+{
+  "name": "mambacode.js",
+  "version": "0.1.0",
+  "description": "High-performance JavaScript/WGSL Mamba SSM library for browser-based code model training and inference",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-vm-modules node_modules/.bin/jest",
+    "lint": "eslint src/ tests/"
+  },
+  "keywords": [
+    "mamba",
+    "ssm",
+    "state-space-model",
+    "webgpu",
+    "wgsl",
+    "machine-learning",
+    "code-model",
+    "bpe",
+    "transformer-alternative"
+  ],
+  "author": "MambaCode.js Contributors",
+  "license": "MIT",
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "eslint": "^8.57.0"
+  },
+  "jest": {
+    "transform": {}
+  }
+}

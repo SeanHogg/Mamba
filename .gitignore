@@ -1,6 +1,11 @@
-# gitignore template for LangChain products, e.g., LangGraph, LangSmith
-# website: https://www.langchain.com/
-# website: https://www.langchain.com/langgraph
+# MambaCode.js – build artifacts and dependencies
 
-# LangGraph
+# Node modules
+node_modules/
+
+# Build outputs
+dist/
+build/
+
+# LangGraph (inherited from template)
 .langgraph_api/
