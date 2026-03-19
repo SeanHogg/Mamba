@@ -46,7 +46,9 @@ npm run build   # compiles TypeScript → dist/
 
 | Guide | Description |
 |---|---|
-| **[Getting Started](docs/getting-started.md)** | Beginner-friendly introduction — what LLMs are, how Qwen fits in, step-by-step setup, and what to do next (including [builderforce.ai](https://builderforce.ai)) |
+| **[Getting Started](docs/getting-started.md)** | Beginner-friendly introduction — what LLMs are, how Qwen fits in, the full model lifecycle, and what to do next |
+| **[Weight Lifecycle](docs/weight-lifecycle.md)** | Complete guide to obtaining Qwen vocabulary files, loading pre-trained checkpoints, fine-tuning, exporting weights, and sharing with your team |
+| **[API Reference](docs/api-reference.md)** | Full technical reference — every exported class, interface, and function with TypeScript and JavaScript examples |
 
 ---
 
@@ -67,13 +69,13 @@ import {
 // 1. Initialise WebGPU
 const { device } = await initWebGPU();
 
-// 2. Load tokenizer
+// 2. Load tokenizer (vocab.json + merges.txt from Qwen3.5-Coder)
 const tokenizer = new BPETokenizer();
 await tokenizer.load('/vocab.json', '/merges.txt');
 
 // 3. Create model
 const config: MambaModelConfig = {
-  vocabSize : tokenizer.vocabSize,   // e.g. 151936 for Qwen3.5-Coder
+  vocabSize : tokenizer.vocabSize,   // 151936 for Qwen3.5-Coder
   dModel    : 512,
   numLayers : 8,
   dState    : 16,
@@ -82,7 +84,11 @@ const config: MambaModelConfig = {
 };
 const model = new MambaModel(device, config);
 
-// 4. Train on local code
+// 4. Load a pre-trained checkpoint
+const response = await fetch('/models/mamba-coder-checkpoint.bin');
+await model.loadWeights(await response.arrayBuffer());
+
+// 5. Fine-tune on local code
 const trainer = new MambaTrainer(model, tokenizer);
 const opts: TrainOptions = {
   learningRate : 1e-4,
@@ -91,10 +97,13 @@ const opts: TrainOptions = {
 };
 const losses = await trainer.train(myCodeString, opts);
 
-// 5. Generate code
+// 6. Generate code
 const promptIds = tokenizer.encode('function fibonacci(');
 const outputIds = await model.generate(promptIds, 200, { temperature: 0.8 });
 console.log(tokenizer.decode(outputIds));
+
+// 7. Save fine-tuned weights for next session
+const checkpoint = await model.exportWeights();
 ```
 
 ### JavaScript (ESM)
@@ -112,7 +121,7 @@ import {
 // 1. Initialise WebGPU
 const { device } = await initWebGPU();
 
-// 2. Load tokenizer
+// 2. Load tokenizer (vocab.json + merges.txt from Qwen3.5-Coder)
 const tokenizer = new BPETokenizer();
 await tokenizer.load('/vocab.json', '/merges.txt');
 
@@ -123,7 +132,11 @@ const model = new MambaModel(device, {
   numLayers : 8,
 });
 
-// 4. Train on local code
+// 4. Load a pre-trained checkpoint
+const response = await fetch('/models/mamba-coder-checkpoint.bin');
+await model.loadWeights(await response.arrayBuffer());
+
+// 5. Fine-tune on local code
 const trainer = new MambaTrainer(model, tokenizer);
 const losses = await trainer.train(myCodeString, {
   learningRate : 1e-4,
@@ -131,10 +144,13 @@ const losses = await trainer.train(myCodeString, {
   onEpochEnd   : (epoch, loss) => console.log(`Epoch ${epoch}: loss=${loss.toFixed(4)}`),
 });
 
-// 5. Generate code
+// 6. Generate code
 const promptIds = tokenizer.encode('function fibonacci(');
 const outputIds = await model.generate(promptIds, 200, { temperature: 0.8 });
 console.log(tokenizer.decode(outputIds));
+
+// 7. Save fine-tuned weights for next session
+const checkpoint = await model.exportWeights();
 ```
 
 ### WSLA (Weight-Selective Local Adaptation)

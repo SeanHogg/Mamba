@@ -11,6 +11,7 @@ import {
     createBindGroup,
     dispatchKernel,
     readBuffer,
+    uploadBuffer,
     cdiv,
 } from '../utils/gpu_utils';
 import { LINEAR_FORWARD_WGSL } from '../kernels/linear_projection';
@@ -207,6 +208,110 @@ export class MambaModel {
     setWSLAMode(enabled: boolean): void {
         for (const block of this.blocks) block.setWSLAMode(enabled);
         this._wslaMode = enabled;
+    }
+
+    /**
+     * Serialise all model parameters to an ArrayBuffer.
+     *
+     * Binary format:
+     *   [0..3]   magic  : uint32  = 0x4D424A53 ('MBJS')
+     *   [4..7]   version: uint32  = 1
+     *   [8..11]  nParams: uint32
+     *   [12 .. 12+4*nParams-1]  numel[i]: uint32 for each parameter i
+     *   [12+4*nParams ..]       float32 data for each parameter, concatenated
+     *
+     * Save the returned buffer to a file or IndexedDB and reload it with
+     * `loadWeights()` to resume from a checkpoint.
+     */
+    async exportWeights(): Promise<ArrayBuffer> {
+        const params = this.parameters();
+        const nParams = params.length;
+
+        // Read all GPU buffers into CPU Float32Arrays
+        const arrays: Float32Array[] = await Promise.all(
+            params.map(p => readBuffer(this.device, p.buf, p.numel * 4))
+        );
+
+        // Calculate total byte size: header + numel table + all float data
+        const headerBytes = 4 + 4 + 4 + nParams * 4;  // magic + version + nParams + numel[]
+        const dataBytes   = arrays.reduce((acc, a) => acc + a.byteLength, 0);
+        const out         = new ArrayBuffer(headerBytes + dataBytes);
+        const view        = new DataView(out);
+
+        let offset = 0;
+        view.setUint32(offset, 0x4D424A53, true); offset += 4;  // magic 'MBJS'
+        view.setUint32(offset, 1,           true); offset += 4;  // version
+        view.setUint32(offset, nParams,     true); offset += 4;  // nParams
+
+        for (const p of params) {
+            view.setUint32(offset, p.numel, true);
+            offset += 4;
+        }
+
+        for (const arr of arrays) {
+            new Float32Array(out, offset, arr.length).set(arr);
+            offset += arr.byteLength;
+        }
+
+        return out;
+    }
+
+    /**
+     * Load model parameters from an ArrayBuffer previously produced by
+     * `exportWeights()`.  The parameter count and element counts must match
+     * the current model configuration exactly.
+     *
+     * @throws {Error} if the magic number, version, or parameter layout do
+     *                 not match the current model.
+     */
+    async loadWeights(buffer: ArrayBuffer): Promise<void> {
+        const view    = new DataView(buffer);
+        let offset    = 0;
+
+        const magic   = view.getUint32(offset, true); offset += 4;
+        if (magic !== 0x4D424A53) {
+            throw new Error(
+                'Invalid weight file: bad magic number. ' +
+                'Ensure the file was exported by MambaModel.exportWeights().'
+            );
+        }
+
+        const version = view.getUint32(offset, true); offset += 4;
+        if (version !== 1) {
+            throw new Error(`Unsupported weight file version: ${version}. Expected version 1.`);
+        }
+
+        const nParams = view.getUint32(offset, true); offset += 4;
+        const params  = this.parameters();
+
+        if (nParams !== params.length) {
+            throw new Error(
+                `Weight file has ${nParams} parameters but this model has ${params.length}. ` +
+                'Ensure the model configuration matches the one used when exporting.'
+            );
+        }
+
+        const numels: number[] = [];
+        for (let i = 0; i < nParams; i++) {
+            numels.push(view.getUint32(offset, true));
+            offset += 4;
+        }
+
+        for (let i = 0; i < nParams; i++) {
+            // i is guaranteed in-bounds: nParams === params.length was verified above
+            const p      = params[i]!;
+            const numel  = numels[i]!;
+            if (numel !== p.numel) {
+                throw new Error(
+                    `Parameter ${i} ("${p.name}") size mismatch: ` +
+                    `file has ${numel} elements, model expects ${p.numel}.`
+                );
+            }
+
+            const slice = new Float32Array(buffer, offset, p.numel);
+            uploadBuffer(this.device, p.buf, slice);
+            offset += p.numel * 4;
+        }
     }
 }
 
