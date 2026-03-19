@@ -471,4 +471,4 @@ The weight file was exported from a model with a different configuration. The mo
 
 ---
 
-*Back to [README](../README.md)*
+*Back to [README](../README.md) · [Integration & Architecture](./integration-architecture.md)*

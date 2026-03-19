@@ -468,4 +468,4 @@ A freshly-initialised model with random weights always generates gibberish. You 
 
 ---
 
-*Back to [README](../README.md) · [API Reference](./api-reference.md) · [Weight Lifecycle](./weight-lifecycle.md)*
+*Back to [README](../README.md) · [Integration & Architecture](./integration-architecture.md) · [API Reference](./api-reference.md) · [Weight Lifecycle](./weight-lifecycle.md)*

@@ -47,6 +47,7 @@ npm run build   # compiles TypeScript → dist/
 | Guide | Description |
 |---|---|
 | **[Getting Started](docs/getting-started.md)** | Beginner-friendly introduction — what LLMs are, how Qwen fits in, the full model lifecycle, and what to do next |
+| **[Integration & Architecture](docs/integration-architecture.md)** | Production architecture guide — embedding Mamba as a unified brain + memory system, integration patterns, advanced use cases, and design tradeoffs |
 | **[Weight Lifecycle](docs/weight-lifecycle.md)** | Complete guide to obtaining Qwen vocabulary files, loading pre-trained checkpoints, fine-tuning, exporting weights, and sharing with your team |
 | **[API Reference](docs/api-reference.md)** | Full technical reference — every exported class, interface, and function with TypeScript and JavaScript examples |
 
@@ -245,7 +246,10 @@ tests/
 └── quantization.test.ts            ← Quantization round-trip tests
 
 docs/
-└── getting-started.md              ← Step-by-step guide (TS & JS)
+├── getting-started.md              ← Step-by-step guide (TS & JS)
+├── integration-architecture.md     ← Brain + Memory architecture guide
+├── weight-lifecycle.md             ← Weight loading, fine-tuning, export
+└── api-reference.md                ← Full API reference
 ```
 
 ---
