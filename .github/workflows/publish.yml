@@ -1,0 +1,82 @@
+name: Publish to npm
+
+on:
+  # Automatically publish when a GitHub Release is published
+  release:
+    types: [published]
+
+  # Allow manual publishing with a configurable dist-tag
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "npm dist-tag (e.g. latest, next, beta)"
+        required: false
+        default: "latest"
+
+permissions:
+  contents: read
+  id-token: write # enables npm provenance attestation
+
+jobs:
+  # ── Gate: run the full test suite before publishing ───────────────────────
+  test:
+    name: Test (Node.js ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: ["20.x", "22.x"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+  # ── Publish to npm ────────────────────────────────────────────────────────
+  publish:
+    name: Publish to npm
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: "npm"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Determine dist-tag
+        id: dist_tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            # Pre-release GitHub releases (e.g. "v1.0.0-beta.1") publish as "next";
+            # regular releases publish as "latest"
+            if [ "${{ github.event.release.prerelease }}" = "true" ]; then
+              echo "tag=next" >> "$GITHUB_OUTPUT"
+            else
+              echo "tag=latest" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm
+        run: npm publish --provenance --tag ${{ steps.dist_tag.outputs.tag }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
