@@ -1,6 +1,6 @@
 {
   "name": "mambacode.js",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "High-performance JavaScript/WGSL Mamba SSM library for browser-based code model training and inference",
   "main": "src/index.js",
   "type": "module",
@@ -24,7 +24,11 @@
     "bpe",
     "transformer-alternative"
   ],
-  "author": "MambaCode.js Contributors",
+  "author": {
+    "name": "Sean Hogg",
+    "email": "seanhogg@gmail.com",
+    "url": "https://builderforce.ai"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
