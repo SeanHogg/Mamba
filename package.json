@@ -1,6 +1,6 @@
 {
   "name": "mambacode.js",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "High-performance TypeScript/WGSL Mamba SSM library for browser-based code model training and inference",
   "main": "dist/index.js",
   "module": "dist/index.js",

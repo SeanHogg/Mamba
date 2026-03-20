@@ -10,13 +10,13 @@ import {
     createBindGroup,
     dispatchKernel,
     cdiv,
-} from '../utils/gpu_utils';
+} from '../utils/gpu_utils.js';
 
-import { crossEntropyLoss, crossEntropyGrad } from './autograd';
-import { WEIGHT_UPDATE_WGSL, GRAD_CLIP_WGSL } from '../kernels/weight_update';
-import { MambaModel, MambaModelConfig } from '../model/mamba_model';
-import { BPETokenizer } from '../tokenizer/bpe';
-import { BlockParam } from '../model/mamba_block';
+import { crossEntropyLoss, crossEntropyGrad } from './autograd.js';
+import { WEIGHT_UPDATE_WGSL, GRAD_CLIP_WGSL } from '../kernels/weight_update.js';
+import { MambaModel, MambaModelConfig } from '../model/mamba_model.js';
+import { BPETokenizer } from '../tokenizer/bpe.js';
+import { BlockParam } from '../model/mamba_block.js';
 
 export interface TrainOptions {
   learningRate?: number;

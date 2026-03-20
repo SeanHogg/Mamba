@@ -10,12 +10,12 @@ import {
     createUniformBuffer,
     dispatchKernel,
     cdiv,
-} from '../utils/gpu_utils';
+} from '../utils/gpu_utils.js';
 
-import { SELECTIVE_SCAN_FORWARD_WGSL }  from '../kernels/selective_scan';
-import { CONV1D_FORWARD_WGSL }          from '../kernels/conv1d';
-import { LINEAR_FORWARD_WGSL }          from '../kernels/linear_projection';
-import { ACTIVATIONS_WGSL }             from '../kernels/activations';
+import { SELECTIVE_SCAN_FORWARD_WGSL }  from '../kernels/selective_scan.js';
+import { CONV1D_FORWARD_WGSL }          from '../kernels/conv1d.js';
+import { LINEAR_FORWARD_WGSL }          from '../kernels/linear_projection.js';
+import { ACTIVATIONS_WGSL }             from '../kernels/activations.js';
 
 export interface MambaBlockConfig {
   dModel: number;

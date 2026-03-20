@@ -2,7 +2,7 @@
  * mamba_model.ts – Full Mamba language model.
  */
 
-import { MambaBlock, BlockCache, BlockParam } from './mamba_block';
+import { MambaBlock, BlockCache, BlockParam } from './mamba_block.js';
 import {
     createStorageBuffer,
     createEmptyStorageBuffer,
@@ -13,9 +13,9 @@ import {
     readBuffer,
     uploadBuffer,
     cdiv,
-} from '../utils/gpu_utils';
-import { LINEAR_FORWARD_WGSL } from '../kernels/linear_projection';
-import { ACTIVATIONS_WGSL }    from '../kernels/activations';
+} from '../utils/gpu_utils.js';
+import { LINEAR_FORWARD_WGSL } from '../kernels/linear_projection.js';
+import { ACTIVATIONS_WGSL }    from '../kernels/activations.js';
 
 export interface MambaModelConfig {
   vocabSize: number;
