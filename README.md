@@ -50,6 +50,7 @@ npm run build   # compiles TypeScript → dist/
 | **[Integration & Architecture](docs/integration-architecture.md)** | Production architecture guide — embedding Mamba as a unified brain + memory system, integration patterns, advanced use cases, and design tradeoffs |
 | **[Weight Lifecycle](docs/weight-lifecycle.md)** | Complete guide to obtaining Qwen vocabulary files, loading pre-trained checkpoints, fine-tuning, exporting weights, and sharing with your team |
 | **[API Reference](docs/api-reference.md)** | Full technical reference — every exported class, interface, and function with TypeScript and JavaScript examples |
+| **[MambaKit PRD](docs/mamba-kit-prd.md)** | Product requirements document for MambaKit — an opinionated, zero-boilerplate facade over MambaCode.js |
 
 ---
 
@@ -299,6 +300,16 @@ Unit tests cover quantization, BPE tokenization, autograd, and WGSL kernel sourc
 | Firefox | Nightly | ✅ Supported (flag: `dom.webgpu.enabled`) |
 | Safari | 18+ | ⚠️ Partial (WebGPU in preview) |
 | Node.js | — | ❌ Not supported (no `navigator.gpu`) |
+
+---
+
+## Acknowledgements
+
+This library builds on the Mamba selective state space model research. Special credit to:
+
+- **Mamba 3** — Tri Dao's blog post [*Mamba 3, Part 1*](https://tridao.me/blog/2026/mamba3-part1/) (2026), which describes the latest architectural refinements.
+- **Mamba 3 paper** — [*Mamba: The Hard Way* (arXiv 2603.15569)](https://arxiv.org/abs/2603.15569), the accompanying technical paper.
+- Original **Mamba SSM** paper — [*Mamba: Linear-Time Sequence Modeling with Selective State Spaces* (arXiv 2312.00752)](https://arxiv.org/abs/2312.00752) by Gu & Dao (2023).
 
 ---
 
