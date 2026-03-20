@@ -120,3 +120,122 @@ test('Tensor.byteSize is numel * 4', () => {
     const t = new Tensor(null, [10]);
     expect(t.byteSize).toBe(40);
 });
+
+test('Tensor requiresGrad defaults to false', () => {
+    const t = new Tensor(null, [4]);
+    expect(t.requiresGrad).toBe(false);
+});
+
+test('Tensor requiresGrad can be set to true', () => {
+    const t = new Tensor(null, [4], true);
+    expect(t.requiresGrad).toBe(true);
+});
+
+test('Tensor.grad is null on construction', () => {
+    const t = new Tensor(null, [5]);
+    expect(t.grad).toBeNull();
+});
+
+test('Tensor._gradFn is null on construction', () => {
+    const t = new Tensor(null, [3]);
+    expect(t._gradFn).toBeNull();
+});
+
+test('Tensor.numel is 1 for scalar (empty shape)', () => {
+    const t = new Tensor(null, []);
+    expect(t.numel).toBe(1);
+});
+
+test('Tensor.numel handles high-rank shapes', () => {
+    const t = new Tensor(null, [2, 3, 4, 5]);
+    expect(t.numel).toBe(120);
+});
+
+// ── crossEntropyLoss – additional cases ──────────────────────────────────────
+
+test('crossEntropyLoss with single-element logits is ~0', () => {
+    const logits = new Float32Array([5.0]);
+    const loss   = crossEntropyLoss(logits, 0);
+    // Only one class → probability = 1 → -log(1) = 0
+    expect(Math.abs(loss)).toBeLessThan(1e-5);
+});
+
+test('crossEntropyLoss is numerically stable with large logits', () => {
+    const logits = new Float32Array([1000.0, 1001.0, 999.0]);
+    const loss   = crossEntropyLoss(logits, 1);
+    expect(Number.isFinite(loss)).toBe(true);
+    expect(loss).toBeGreaterThanOrEqual(0);
+});
+
+test('crossEntropyLoss is numerically stable with very negative logits', () => {
+    const logits = new Float32Array([-1000.0, -999.0, -1001.0]);
+    const loss   = crossEntropyLoss(logits, 1);
+    expect(Number.isFinite(loss)).toBe(true);
+});
+
+test('crossEntropyLoss two uniform logits equals log(2)', () => {
+    const logits = new Float32Array([0.0, 0.0]);
+    const loss   = crossEntropyLoss(logits, 0);
+    expect(Math.abs(loss - Math.log(2))).toBeLessThan(1e-5);
+});
+
+// ── crossEntropyGrad – additional cases ──────────────────────────────────────
+
+test('crossEntropyGrad with single-element logits returns [0]', () => {
+    const logits = new Float32Array([3.0]);
+    const grad   = crossEntropyGrad(logits, 0);
+    expect(grad.length).toBe(1);
+    // prob = 1 → grad = 1 - 1 = 0
+    expect(Math.abs(grad[0]!)).toBeLessThan(1e-6);
+});
+
+test('crossEntropyGrad uniform logits gives symmetric non-target entries', () => {
+    const logits = new Float32Array(4).fill(0.0);
+    const grad   = crossEntropyGrad(logits, 0);
+    expect(Math.abs(grad[1]! - grad[2]!)).toBeLessThan(1e-6);
+    expect(Math.abs(grad[2]! - grad[3]!)).toBeLessThan(1e-6);
+});
+
+test('crossEntropyGrad values lie in [-1, 1]', () => {
+    const logits = new Float32Array([2.0, -1.0, 0.5, 3.0, -2.0]);
+    const grad   = crossEntropyGrad(logits, 2);
+    for (const g of grad) {
+        expect(g).toBeGreaterThanOrEqual(-1);
+        expect(g).toBeLessThanOrEqual(1);
+    }
+});
+
+// ── Tape – additional cases ───────────────────────────────────────────────────
+
+test('noGrad then enableGrad restores recording', () => {
+    enableGrad();
+    clearTape();
+    noGrad();
+    expect(recordOperation(() => {})).toBe(-1);
+    enableGrad();
+    expect(recordOperation(() => {})).toBe(0);
+    clearTape();
+});
+
+test('tape index increments with each recorded operation', () => {
+    enableGrad();
+    clearTape();
+    const i0 = recordOperation(() => {});
+    const i1 = recordOperation(() => {});
+    const i2 = recordOperation(() => {});
+    expect(i0).toBe(0);
+    expect(i1).toBe(1);
+    expect(i2).toBe(2);
+    clearTape();
+});
+
+test('multiple clearTape calls are idempotent', () => {
+    enableGrad();
+    clearTape();
+    recordOperation(() => {});
+    clearTape();
+    clearTape();
+    const idx = recordOperation(() => {});
+    expect(idx).toBe(0);
+    clearTape();
+});

@@ -303,6 +303,16 @@ Unit tests cover quantization, BPE tokenization, autograd, and WGSL kernel sourc
 
 ---
 
+## Acknowledgements
+
+This library builds on the Mamba selective state space model research. Special credit to:
+
+- **Mamba 3** — Tri Dao's blog post [*Mamba 3, Part 1*](https://tridao.me/blog/2026/mamba3-part1/) (2026), which describes the latest architectural refinements.
+- **Mamba 3 paper** — [*Mamba: The Hard Way* (arXiv 2603.15569)](https://arxiv.org/abs/2603.15569), the accompanying technical paper.
+- Original **Mamba SSM** paper — [*Mamba: Linear-Time Sequence Modeling with Selective State Spaces* (arXiv 2312.00752)](https://arxiv.org/abs/2312.00752) by Gu & Dao (2023).
+
+---
+
 ## License
 
 MIT

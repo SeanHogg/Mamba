@@ -151,3 +151,95 @@ test('all kernels declare struct for uniform params', () => {
         expect(kernel).toMatch(/struct\s+\w+/);
     }
 });
+
+// ── Selective scan – deeper inspection ───────────────────────────────────────
+
+test('SELECTIVE_SCAN_FORWARD_WGSL contains softplus helper', () => {
+    expect(SELECTIVE_SCAN_FORWARD_WGSL).toContain('fn softplus');
+});
+
+test('SELECTIVE_SCAN_FORWARD_WGSL contains discretise_A helper', () => {
+    expect(SELECTIVE_SCAN_FORWARD_WGSL).toContain('fn discretise_A');
+});
+
+test('SELECTIVE_SCAN_FORWARD_WGSL contains discretise_B helper', () => {
+    expect(SELECTIVE_SCAN_FORWARD_WGSL).toContain('fn discretise_B');
+});
+
+test('SELECTIVE_SCAN_FORWARD_WGSL references ScanParams struct', () => {
+    expect(SELECTIVE_SCAN_FORWARD_WGSL).toContain('ScanParams');
+});
+
+test('SELECTIVE_SCAN_FORWARD_WGSL declares h_cache binding', () => {
+    expect(SELECTIVE_SCAN_FORWARD_WGSL).toContain('h_cache');
+});
+
+test('SELECTIVE_SCAN_BACKWARD_WGSL contains softplus_grad helper', () => {
+    expect(SELECTIVE_SCAN_BACKWARD_WGSL).toContain('fn softplus_grad');
+});
+
+// ── Conv1D – deeper inspection ────────────────────────────────────────────────
+
+test('CONV1D_FORWARD_WGSL references ConvParams struct', () => {
+    expect(CONV1D_FORWARD_WGSL).toContain('ConvParams');
+});
+
+test('CONV1D_FORWARD_WGSL reads bias binding', () => {
+    expect(CONV1D_FORWARD_WGSL).toContain('bias');
+});
+
+test('CONV1D_BACKWARD_WGSL is a non-empty string', () => {
+    expect(typeof CONV1D_BACKWARD_WGSL).toBe('string');
+    expect(CONV1D_BACKWARD_WGSL.length).toBeGreaterThan(50);
+});
+
+// ── Linear projection – deeper inspection ────────────────────────────────────
+
+test('LINEAR_FORWARD_WGSL references LinearParams struct', () => {
+    expect(LINEAR_FORWARD_WGSL).toContain('LinearParams');
+});
+
+test('LINEAR_FORWARD_WGSL adds bias to output', () => {
+    expect(LINEAR_FORWARD_WGSL).toContain('bias');
+});
+
+test('LINEAR_BACKWARD_WGSL is a non-empty string', () => {
+    expect(typeof LINEAR_BACKWARD_WGSL).toBe('string');
+    expect(LINEAR_BACKWARD_WGSL.length).toBeGreaterThan(50);
+});
+
+// ── Weight update – deeper inspection ────────────────────────────────────────
+
+test('WEIGHT_UPDATE_WGSL references AdamParams struct', () => {
+    expect(WEIGHT_UPDATE_WGSL).toContain('AdamParams');
+});
+
+test('WEIGHT_UPDATE_WGSL is a non-empty string', () => {
+    expect(typeof WEIGHT_UPDATE_WGSL).toBe('string');
+    expect(WEIGHT_UPDATE_WGSL.length).toBeGreaterThan(50);
+});
+
+test('GRAD_CLIP_WGSL is a non-empty string', () => {
+    expect(typeof GRAD_CLIP_WGSL).toBe('string');
+    expect(GRAD_CLIP_WGSL.length).toBeGreaterThan(50);
+});
+
+// ── Activations – deeper inspection ──────────────────────────────────────────
+
+test('ACTIVATIONS_WGSL contains RMSNormParams struct', () => {
+    expect(ACTIVATIONS_WGSL).toContain('RMSNormParams');
+});
+
+test('ACTIVATIONS_WGSL contains eps for numerical stability', () => {
+    expect(ACTIVATIONS_WGSL).toContain('eps');
+});
+
+test('ACTIVATIONS_BACKWARD_WGSL contains silu derivative formula', () => {
+    // The backward kernel computes sigmoid(x) * (1 + x*(1 - sigmoid(x)))
+    expect(ACTIVATIONS_BACKWARD_WGSL).toContain('sig');
+});
+
+test('ACTIVATIONS_BACKWARD_WGSL is a non-empty string', () => {
+    expect(typeof ACTIVATIONS_BACKWARD_WGSL).toBe('string');
+    expect(ACTIVATIONS_BACKWARD_WGSL.length).toBeGreaterThan(50);
+});

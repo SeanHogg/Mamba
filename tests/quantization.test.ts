@@ -105,3 +105,85 @@ test('estimateMemory returns correct byte counts', () => {
     expect(fp16).toBe(200);
     expect(int8).toBe(100);
 });
+
+test('estimateMemory with 0 elements returns all zeros', () => {
+    const { fp32, fp16, int8 } = estimateMemory(0);
+    expect(fp32).toBe(0);
+    expect(fp16).toBe(0);
+    expect(int8).toBe(0);
+});
+
+test('estimateMemory fp32 is always 4× int8', () => {
+    const { fp32, int8 } = estimateMemory(256);
+    expect(fp32).toBe(int8 * 4);
+});
+
+test('estimateMemory fp16 is always 2× int8', () => {
+    const { fp16, int8 } = estimateMemory(256);
+    expect(fp16).toBe(int8 * 2);
+});
+
+// ── FP16 – additional cases ───────────────────────────────────────────────────
+
+test('floatToFp16 and fp16ToFloat round-trip for zero', () => {
+    expect(fp16ToFloat(floatToFp16(0.0))).toBe(0.0);
+});
+
+test('fp16ToFloat handles NaN bit pattern (exponent=31, mantissa>0)', () => {
+    // exponent bits all 1, non-zero mantissa → NaN
+    expect(Number.isNaN(fp16ToFloat(0x7E00))).toBe(true);
+});
+
+test('floatToFp16 sign bit is set for negative values', () => {
+    expect((floatToFp16(-1.0) >>> 15) & 1).toBe(1);
+});
+
+test('floatToFp16 sign bit is clear for positive values', () => {
+    expect((floatToFp16(1.0) >>> 15) & 1).toBe(0);
+});
+
+test('quantizeFp16 output length matches input', () => {
+    const data = new Float32Array(50).fill(1.5);
+    expect(quantizeFp16(data).length).toBe(50);
+});
+
+test('dequantizeFp16 output length matches input', () => {
+    const fp16 = new Uint16Array(20).fill(floatToFp16(2.0));
+    expect(dequantizeFp16(fp16).length).toBe(20);
+});
+
+// ── Int8 – additional cases ───────────────────────────────────────────────────
+
+test('quantizeInt8 single element round-trip', () => {
+    const data = new Float32Array([0.75]);
+    const { data: q, scale } = quantizeInt8(data);
+    const back = dequantizeInt8(q, scale);
+    expect(Math.abs(back[0]! - 0.75)).toBeLessThan(0.01);
+});
+
+test('quantizeInt8 scale equals maxAbs / 127', () => {
+    const data = new Float32Array([0.0, 0.254, -0.127]);
+    const { scale } = quantizeInt8(data);
+    expect(Math.abs(scale - 0.254 / 127)).toBeLessThan(1e-6);
+});
+
+test('dequantizeInt8 output is zeros when int8 data is all zeros', () => {
+    const q    = new Int8Array([0, 0, 0]);
+    const back = dequantizeInt8(q, 1.0);
+    expect([...back]).toEqual([0, 0, 0]);
+});
+
+test('quantizeInt8PerChannel single channel matches quantizeInt8', () => {
+    const data = new Float32Array([0.5, -0.5, 0.25]);
+    const { data: qPC, scales } = quantizeInt8PerChannel(data, 1);
+    const { data: q1,  scale  } = quantizeInt8(data);
+    expect(Math.abs(scales[0]! - scale)).toBeLessThan(1e-6);
+    expect([...qPC]).toEqual([...q1]);
+});
+
+test('dequantizeInt8PerChannel output length matches input', () => {
+    const data = new Float32Array(6).fill(0.5);
+    const { data: q, scales } = quantizeInt8PerChannel(data, 3);
+    const back = dequantizeInt8PerChannel(q, scales, 3);
+    expect(back.length).toBe(6);
+});
