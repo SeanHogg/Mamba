@@ -5,14 +5,20 @@
 //
 // Forward:  y[b, t, d] = sum_{k=0}^{K-1} weight[d, k] * x[b, t-k, d]
 //           where x[b, t', d] = 0 for t' < 0  (causal padding)
+//
+// The `groups` uniform is included for Mamba-2/3 compatibility where conv runs
+// over a fused (x, B, C) buffer.  For standard Mamba-1 usage set groups = 1.
+// The kernel math is identical; the field is reserved for future grouped
+// weight-sharing variants.
 
 export const CONV1D_FORWARD_WGSL = /* wgsl */`
 
 struct ConvParams {
     seq_len     : u32,   // L
-    d_channels  : u32,   // D (number of depthwise channels)
+    d_channels  : u32,   // D (number of depthwise channels in this call)
     kernel_size : u32,   // K (typically 4)
     batch       : u32,   // B
+    groups      : u32,   // number of channel groups (1 = standard depthwise)
 };
 
 @group(0) @binding(0) var<uniform>             params   : ConvParams;

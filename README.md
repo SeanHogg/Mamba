@@ -1,13 +1,26 @@
 # MambaCode.js
 
-> WebGPU-accelerated Mamba State Space Model library — written in **TypeScript**, compiled for use in any JavaScript application.
+> WebGPU-accelerated Mamba-1/2/3 and Hybrid SSM library — written in **TypeScript**, compiled for use in any JavaScript application.
 
 [![npm](https://img.shields.io/npm/v/mambacode.js)](https://www.npmjs.com/package/mambacode.js)
 [![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
-MambaCode.js is a **TypeScript-first** library that brings the [Mamba SSM](https://arxiv.org/abs/2312.00752) architecture to the browser via WebGPU. It targets the Qwen3.5-Coder-0.8B model shape and supports full **on-device training** (backpropagation), allowing models to adapt to a user's private codebase locally — without any data leaving the browser.
+MambaCode.js is a **TypeScript-first** library that brings the Mamba family of State Space Models to the browser via WebGPU. Version 2.0.0 adds **Mamba-2** (SSD), **Mamba-3** (complex-valued MIMO + ET discretisation), and **hybrid attention** layers, while remaining fully backward-compatible with Mamba-1 checkpoints.
 
 > 📖 **New to MambaCode.js?** Start with the [Getting Started Guide](./docs/getting-started.md).
+
+---
+
+## What's New in v2.0.0
+
+| Feature | Detail |
+|---|---|
+| **Mamba-2 (SSD)** | Structured State Space Duality — chunked matmul scan, multi-head, scalar A, inner RMSNorm |
+| **Mamba-3** | Complex-valued states (ℂ^N), ET discretisation, MIMO recurrence, 2× smaller state size |
+| **AttentionBlock** | Causal multi-head attention for hybrid (Jamba/Zamba) layer schedules |
+| **HybridMambaModel** | Per-layer type schedule — mix mamba1/2/3/attention freely |
+| **MBJS v2 format** | Layer-type metadata in checkpoint header; v1 files still load unchanged |
+| **`MambaBlock` alias** | Kept as deprecated alias for `Mamba1Block` until 3.0.0 |
 
 ---
 
@@ -16,15 +29,15 @@ MambaCode.js is a **TypeScript-first** library that brings the [Mamba SSM](https
 | Feature | Detail |
 |---|---|
 | **TypeScript-first** | Full type declarations shipped with the package |
-| **Plain JS compatible** | Import the compiled `dist/` in any JavaScript project — no TypeScript toolchain required |
-| **Architecture** | Selective State Space Model (S6) — linear O(N) context scaling |
+| **Plain JS compatible** | Import the compiled `dist/` in any JavaScript project |
+| **SSM variants** | Mamba-1 (S6), Mamba-2 (SSD), Mamba-3 (complex MIMO+ET) |
+| **Hybrid models** | Jamba/Zamba-style mixed SSM + attention schedules |
 | **Hardware target** | WebGPU (WGSL) — Chrome 113+, Edge 113+, Firefox Nightly |
-| **Memory ceiling** | ≤ 3 GB VRAM (Chrome/Edge/Firefox stable) |
 | **No heavy frameworks** | Zero TensorFlow.js / Transformers.js dependencies |
 | **On-device training** | Tape-based autograd + AdamW GPU optimizer |
 | **Quantization** | FP16 weights, Int8 activations |
-| **Tokenizer** | Browser-side BPE (Qwen3.5-Coder compatible) |
-| **WSLA mode** | Fine-tune only B & C matrices for rapid local adaptation |
+| **Tokenizer** | Browser-side BPE (Qwen2.5-Coder compatible) |
+| **WSLA mode** | Fast-adapt: trains only the selective projection rows |
 
 ---
 
@@ -34,7 +47,7 @@ MambaCode.js is a **TypeScript-first** library that brings the [Mamba SSM](https
 npm install mambacode.js
 ```
 
-Build the library from source:
+Build from source:
 
 ```bash
 npm run build   # compiles TypeScript → dist/
@@ -42,172 +55,122 @@ npm run build   # compiles TypeScript → dist/
 
 ---
 
-## Documentation
-
-| Guide | Description |
-|---|---|
-| **[Getting Started](docs/getting-started.md)** | Beginner-friendly introduction — what LLMs are, how Qwen fits in, the full model lifecycle, and what to do next |
-| **[Integration & Architecture](docs/integration-architecture.md)** | Production architecture guide — embedding Mamba as a unified brain + memory system, integration patterns, advanced use cases, and design tradeoffs |
-| **[Weight Lifecycle](docs/weight-lifecycle.md)** | Complete guide to obtaining Qwen vocabulary files, loading pre-trained checkpoints, fine-tuning, exporting weights, and sharing with your team |
-| **[API Reference](docs/api-reference.md)** | Full technical reference — every exported class, interface, and function with TypeScript and JavaScript examples |
-| **[MambaKit PRD](docs/mamba-kit-prd.md)** | Product requirements document for MambaKit — an opinionated, zero-boilerplate facade over MambaCode.js |
-
----
-
 ## Quick Start
 
-### TypeScript
+### Mamba-1 (backward-compatible, unchanged)
 
 ```ts
-import {
-  MambaModel,
-  MambaTrainer,
-  BPETokenizer,
-  initWebGPU,
-  type MambaModelConfig,
-  type TrainOptions,
-} from 'mambacode.js';
+import { MambaModel, MambaTrainer, BPETokenizer, initWebGPU } from 'mambacode.js';
 
-// 1. Initialise WebGPU
 const { device } = await initWebGPU();
-
-// 2. Load tokenizer (vocab.json + merges.txt from Qwen3.5-Coder)
-const tokenizer = new BPETokenizer();
+const tokenizer  = new BPETokenizer();
 await tokenizer.load('/vocab.json', '/merges.txt');
 
-// 3. Create model
-const config: MambaModelConfig = {
-  vocabSize : tokenizer.vocabSize,   // 151936 for Qwen3.5-Coder
-  dModel    : 512,
-  numLayers : 8,
-  dState    : 16,
-  dConv     : 4,
-  expand    : 2,
-};
-const model = new MambaModel(device, config);
-
-// 4. Load a pre-trained checkpoint
-const response = await fetch('/models/mamba-coder-checkpoint.bin');
-await model.loadWeights(await response.arrayBuffer());
-
-// 5. Fine-tune on local code
-const trainer = new MambaTrainer(model, tokenizer);
-const opts: TrainOptions = {
-  learningRate : 1e-4,
-  epochs       : 5,
-  onEpochEnd   : (epoch, loss) => console.log(`Epoch ${epoch}: loss=${loss.toFixed(4)}`),
-};
-const losses = await trainer.train(myCodeString, opts);
-
-// 6. Generate code
-const promptIds = tokenizer.encode('function fibonacci(');
-const outputIds = await model.generate(promptIds, 200, { temperature: 0.8 });
-console.log(tokenizer.decode(outputIds));
-
-// 7. Save fine-tuned weights for next session
-const checkpoint = await model.exportWeights();
-```
-
-### JavaScript (ESM)
-
-The compiled output in `dist/` is plain JavaScript with no TypeScript runtime dependency:
-
-```js
-import {
-  MambaModel,
-  MambaTrainer,
-  BPETokenizer,
-  initWebGPU,
-} from 'mambacode.js';
-
-// 1. Initialise WebGPU
-const { device } = await initWebGPU();
-
-// 2. Load tokenizer (vocab.json + merges.txt from Qwen3.5-Coder)
-const tokenizer = new BPETokenizer();
-await tokenizer.load('/vocab.json', '/merges.txt');
-
-// 3. Create model
 const model = new MambaModel(device, {
   vocabSize : tokenizer.vocabSize,
   dModel    : 512,
   numLayers : 8,
 });
 
-// 4. Load a pre-trained checkpoint
-const response = await fetch('/models/mamba-coder-checkpoint.bin');
-await model.loadWeights(await response.arrayBuffer());
-
-// 5. Fine-tune on local code
-const trainer = new MambaTrainer(model, tokenizer);
-const losses = await trainer.train(myCodeString, {
-  learningRate : 1e-4,
-  epochs       : 5,
-  onEpochEnd   : (epoch, loss) => console.log(`Epoch ${epoch}: loss=${loss.toFixed(4)}`),
-});
-
-// 6. Generate code
-const promptIds = tokenizer.encode('function fibonacci(');
-const outputIds = await model.generate(promptIds, 200, { temperature: 0.8 });
-console.log(tokenizer.decode(outputIds));
-
-// 7. Save fine-tuned weights for next session
-const checkpoint = await model.exportWeights();
+await model.loadWeights(await (await fetch('/checkpoint.bin')).arrayBuffer());
+const ids = await model.generate(tokenizer.encode('function add('), 200);
+console.log(tokenizer.decode(ids));
 ```
 
-### WSLA (Weight-Selective Local Adaptation)
-
-Fine-tune only the B and C matrices for rapid private-codebase adaptation:
+### Mamba-2 (SSD)
 
 ```ts
-await trainer.train(apiUsageExamples, {
-  learningRate : 1e-4,
-  epochs       : 3,
-  wsla         : true,   // only B and C matrices are updated
+import { HybridMambaModel } from 'mambacode.js';
+
+const model = new HybridMambaModel(device, {
+  vocabSize : tokenizer.vocabSize,
+  dModel    : 512,
+  numLayers : 8,
+  nHeads    : 8,
+  layers    : Array(8).fill({ type: 'mamba2' }),
+});
+```
+
+### Mamba-3 (complex states)
+
+```ts
+const model = new HybridMambaModel(device, {
+  vocabSize : tokenizer.vocabSize,
+  dModel    : 512,
+  numLayers : 8,
+  nHeads    : 8,
+  layers    : Array(8).fill({ type: 'mamba3' }),
+});
+```
+
+### Hybrid (Jamba-style: every 4th layer is attention)
+
+```ts
+const model = new HybridMambaModel(device, {
+  vocabSize : tokenizer.vocabSize,
+  dModel    : 512,
+  numLayers : 12,
+  nHeads    : 8,
+  layers    : Array.from({ length: 12 }, (_, i) => ({
+    type: i % 4 === 3 ? 'attention' : 'mamba2',
+  })),
 });
 ```
 
 ---
 
-## Architecture
+## Architecture Reference
+
+### Mamba-1 Block (S6)
 
 ```
-Token IDs
-    │
-    ▼
-Embedding Lookup (GPU gather kernel)
-    │
-    ▼  ┌─────────────────────────────────────────┐
-       │           Mamba Block × N               │
-       │                                         │
-       │  Input ──► RMSNorm                      │
-       │               │                         │
-       │      ┌────────┴────────┐                │
-       │      ▼                 ▼                │
-       │  in_proj(x)       in_proj(z)  [gate]    │
-       │      │                                  │
-       │  Conv1D (causal, K=4)                   │
-       │      │                                  │
-       │   SiLU activation                       │
-       │      │                                  │
-       │  x_proj → Δ, B, C  (selective)          │
-       │      │                                  │
-       │  Δ → dt_proj (full D_inner width)        │
-       │      │                                  │
-       │  ┌───▼──────────────────────────────┐   │
-       │  │  Selective Scan S6               │   │
-       │  │  (Kogge-Stone parallel prefix)   │   │
-       │  │  h_t = Ā·h_{t-1} + B̄·x_t        │   │
-       │  │  y_t = C·h_t + D·x_t            │   │
-       │  └──────────────────────────────────┘   │
-       │      │                                  │
-       │  Gate: y * SiLU(z)                      │
-       │      │                                  │
-       │  out_proj → residual add ──► output     │
-       └─────────────────────────────────────────┘
-    │
-    ▼
-Final RMSNorm → LM Head (tied embedding) → Logits
+Input (B, L, D)
+  └─ RMSNorm
+  └─ in_proj → x, z (gate)
+                x → conv1d → SiLU → x_proj → Δ, B, C
+                                              Δ → dt_proj → softplus
+                                              Selective Scan S6
+                                              h_t = Ā·h_{t-1} + B̄·x_t
+                                              y_t = C·h_t + D·x_t
+  └─ y * SiLU(z)
+  └─ out_proj + residual
+```
+
+### Mamba-2 Block (SSD)
+
+```
+Input (B, L, D)
+  └─ RMSNorm
+  └─ in_proj → [x (D_inner), B (G·N), C (G·N), dt (H)]
+               conv1d over x, B, C (fused)
+               SSD scan: A_bar = exp(-softplus(A) · softplus(dt))
+                          h_t = A_bar · h_{t-1} + B · x_t
+                          y_t = C · h_t
+  └─ inner RMSNorm
+  └─ out_proj + residual
+```
+
+### Mamba-3 Block (complex MIMO, ET)
+
+```
+Input (B, L, D)
+  └─ Same structure as Mamba-2 but:
+     • A ∈ ℂ (log|A|, arg(A)) per head
+     • A_bar = exp(Δ·A)  [complex]
+     • B_bar = (A_bar − 1)·A⁻¹·B  [ET, exact]
+     • h_t ∈ ℂ^(N/2), y_t = Re(C·h_t)
+```
+
+### AttentionBlock (causal MHA)
+
+```
+Input (B, L, D)
+  └─ RMSNorm
+  └─ wQKV → Q, K, V (B, L, H, d_head)
+  └─ scores = Q·Kᵀ / √d_head  (causal mask)
+  └─ softmax → weighted V sum
+  └─ concat heads → wO + residual
+  [optional FFN sublayer]
 ```
 
 ---
@@ -215,79 +178,160 @@ Final RMSNorm → LM Head (tied embedding) → Logits
 ## File Structure
 
 ```
-src/                                ← TypeScript source (edit here)
-├── index.ts                        ← public API entry point
+src/
+├── index.ts                         ← public API entry point (v2.0.0)
 ├── kernels/
-│   ├── selective_scan.ts           ← WGSL: S6 forward + backward (Kogge-Stone)
-│   ├── conv1d.ts                   ← WGSL: 1D causal convolution
-│   ├── linear_projection.ts        ← WGSL: tiled matrix multiplication
-│   ├── weight_update.ts            ← WGSL: AdamW optimizer + gradient clipping
-│   └── activations.ts              ← WGSL: SiLU, RMSNorm
+│   ├── selective_scan.ts            ← WGSL: S6 forward/backward (Mamba-1)
+│   ├── ssd.ts                       ← WGSL: chunked SSD forward/backward (Mamba-2)
+│   ├── complex_ssd.ts               ← WGSL: complex SSD + ET + MIMO (Mamba-3)
+│   ├── attention.ts                 ← WGSL: tiled causal MHA forward/backward
+│   ├── conv1d.ts                    ← WGSL: 1D causal convolution (+ groups param)
+│   ├── linear_projection.ts         ← WGSL: tiled GEMM
+│   ├── weight_update.ts             ← WGSL: AdamW + gradient clipping
+│   └── activations.ts               ← WGSL: SiLU, RMSNorm, Softmax
 ├── model/
-│   ├── mamba_block.ts              ← Mamba Mixer Block (forward pass)
-│   └── mamba_model.ts              ← Full stacked model + generation
+│   ├── sequence_layer.ts            ← SequenceLayer interface (LayerType, LayerParam)
+│   ├── mamba1_block.ts              ← Mamba1Block (renamed from MambaBlock)
+│   ├── mamba2_block.ts              ← Mamba2Block (SSD)
+│   ├── mamba3_block.ts              ← Mamba3Block (complex + MIMO + ET)
+│   ├── attention_block.ts           ← AttentionBlock (causal MHA)
+│   └── mamba_model.ts               ← HybridMambaModel + MambaModel alias
 ├── training/
-│   ├── autograd.ts                 ← Tape-based AD engine + loss helpers
-│   └── trainer.ts                  ← MambaTrainer class
+│   ├── autograd.ts                  ← Tape-based AD + loss helpers
+│   └── trainer.ts                   ← MambaTrainer (AdamW, WSLA)
 ├── tokenizer/
-│   └── bpe.ts                      ← Browser-side BPE tokenizer
+│   └── bpe.ts                       ← Browser-side BPE tokenizer
 └── utils/
-    ├── gpu_utils.ts                ← WebGPU device/buffer management
-    └── quantization.ts             ← FP16 / Int8 quantization utilities
+    ├── gpu_utils.ts                 ← WebGPU device/buffer management
+    └── quantization.ts              ← FP16 / Int8 quantization
 
-dist/                               ← Compiled output (JS + .d.ts, gitignored)
-├── index.js                        ← ESM entry point for JS consumers
-├── index.d.ts                      ← TypeScript declarations for TS consumers
-└── ...                             ← mirrored sub-folders
+tools/                               ← Model building & checkpoint tooling
+├── generate-bin.js                  ← CLI: generate an MBJS v2 checkpoint from scratch
+├── pretrain.html                    ← Browser: pretrain a model on a text corpus
+└── convert.html                     ← Browser: convert HuggingFace Mamba → MBJS format
 
 tests/
-├── kernels.test.ts                 ← WGSL kernel source smoke tests
-├── autograd.test.ts                ← Autograd engine unit tests
-├── bpe.test.ts                     ← BPE tokenizer unit tests
-└── quantization.test.ts            ← Quantization round-trip tests
+├── kernels.test.ts
+├── autograd.test.ts
+├── bpe.test.ts
+└── quantization.test.ts
 
 docs/
-├── getting-started.md              ← Step-by-step guide (TS & JS)
-├── integration-architecture.md     ← Brain + Memory architecture guide
-├── weight-lifecycle.md             ← Weight loading, fine-tuning, export
-└── api-reference.md                ← Full API reference
+├── getting-started.md
+├── integration-architecture.md
+├── weight-lifecycle.md
+├── api-reference.md
+└── prd-mambacode-v2-v3-hybrid.md    ← PRD: Mamba-2/3/hybrid implementation spec
+```
+
+---
+
+## Tools
+
+The `tools/` directory contains model-building and checkpoint utilities that operate at the mambacode.js level. These are **not part of the MambaKit API** — they are for authors who want to build, pretrain, or convert model weights.
+
+### `tools/generate-bin.js` — Generate a blank MBJS checkpoint
+
+Creates a properly-shaped MBJS v2 `.bin` file with randomly initialised weights. Useful as a starting point before pretraining.
+
+```bash
+node tools/generate-bin.js                        # nano → model.bin
+node tools/generate-bin.js --size small           # small preset
+node tools/generate-bin.js --size nano --out my.bin
+```
+
+The weights are **not pretrained** — use `pretrain.html` to run language-model training.
+
+### `tools/pretrain.html` — Browser pretraining UI
+
+In-browser training loop over a text corpus. Requires a WebGPU-capable browser.
+
+```bash
+npm run build
+npm run serve
+# Open http://localhost:3000/tools/pretrain.html
+# Load a corpus (e.g. TinyStories), configure size/epochs, click Start Training
+# Download the resulting .bin checkpoint
+```
+
+### `tools/convert.html` — HuggingFace → MBJS converter
+
+Converts `state-spaces/mamba` safetensors checkpoints to MBJS format.
+
+```bash
+# Open http://localhost:3000/tools/convert.html
+# Drop model.safetensors from huggingface.co/state-spaces/mamba-130m
+# Download converted .bin
 ```
 
 ---
 
 ## WGSL Kernels
 
-### Parallel Selective Scan (`selective_scan.ts`)
-Implements the S6 core using a **Kogge-Stone parallel prefix-sum** inside each workgroup tile. Each tile of 64 time steps is scanned in log₂(64) = 6 GPU barrier rounds, giving O(log N) wall-clock time on the GPU.
+| Kernel file | Entry points | Used by |
+|---|---|---|
+| `selective_scan.ts` | `forward_scan`, `forward_reduce`, `selective_scan_backward` | Mamba-1 |
+| `ssd.ts` | `ssd_chunk_forward`, `ssd_chunk_backward` | Mamba-2 |
+| `complex_ssd.ts` | `complex_ssd_forward`, `complex_ssd_backward` | Mamba-3 |
+| `attention.ts` | `attention_forward`, `attention_value`, `attention_backward` | Attention |
+| `conv1d.ts` | `conv1d_forward`, `conv1d_backward_dx`, `conv1d_backward_dw` | All SSM |
+| `linear_projection.ts` | `linear_forward`, `linear_backward_dX`, `linear_backward_dW` | All layers |
+| `activations.ts` | `silu_forward`, `rmsnorm_forward`, `softmax_forward_simple` | All layers |
+| `weight_update.ts` | `adamw_update`, `grad_norm_reduce`, `grad_clip_scale` | Training |
 
-The associative operator for the recurrence `h_t = Ā·h_{t-1} + B̄·x_t` is:
+---
+
+## MBJS Binary Format
+
+### Version 1 (legacy, still readable)
 
 ```
-(a₁, b₁) ∘ (a₂, b₂) = (a₁·a₂, a₁·b₂ + b₁)
+[0..3]   magic   = 0x4D424A53 ('MBJS')
+[4..7]   version = 1
+[8..11]  nParams : uint32
+[12 ..]  numel[i] : uint32  (×nParams)
+[data]   float32 values
 ```
 
-Tiles are chained via a carry-in state, covering arbitrarily long sequences.
+### Version 2 (written by default from v2.0.0)
 
-### 1D Causal Convolution (`conv1d.ts`)
-Depthwise 1D causal conv (kernel size K=4) with zero left-padding. Enforces causality by only reading positions `t-k` for `k ≥ 0`, contributing 0 for `t < k`.
+```
+[0..3]   magic   = 0x4D424A53
+[4..7]   version = 2
+[8..11]  nLayers : uint32
+[12 ..]  layerType[i] : uint8  (0=mamba1, 1=mamba2, 2=mamba3, 3=attention)
+[pad]    aligned to 4 bytes
+[next4]  nParams : uint32
+[next..]  numel[i] : uint32  (×nParams)
+[data]   float32 values
+```
 
-### Linear Projection (`linear_projection.ts`)
-Tiled 16×16 GEMM in WGSL using workgroup shared memory. Handles arbitrary (M, K) × (N, K) → (M, N) shapes with boundary guards.
+Version 1 files are loaded transparently — all layers assumed `mamba1`.
 
-### AdamW Optimizer (`weight_update.ts`)
-Fused single-kernel AdamW update with decoupled weight decay. Includes a two-pass gradient norm clipping kernel (reduce → scale).
+---
+
+## Migration from v1.x
+
+```ts
+// v1.x — no change needed (mamba1 default is preserved)
+const model = new MambaModel(device, config);
+
+// v2.x — opt into Mamba-2
+const model = new HybridMambaModel(device, { ...config, layers: Array(8).fill({ type: 'mamba2' }) });
+
+// v2.x — MambaBlock is a deprecated alias for Mamba1Block; both still work
+import { MambaBlock, Mamba1Block } from 'mambacode.js';
+```
 
 ---
 
 ## Testing
 
 ```bash
-npm test        # run 58 unit tests (no GPU required)
+npm test        # unit tests (no GPU required)
 npm run build   # compile TypeScript → dist/
-npm run lint    # ESLint on src/ and tests/
+npm run lint    # ESLint
 ```
-
-Unit tests cover quantization, BPE tokenization, autograd, and WGSL kernel source validation. GPU execution tests require a real browser with WebGPU support.
 
 ---
 
@@ -297,19 +341,17 @@ Unit tests cover quantization, BPE tokenization, autograd, and WGSL kernel sourc
 |---|---|---|
 | Chrome | 113+ | ✅ Supported |
 | Edge | 113+ | ✅ Supported |
-| Firefox | Nightly | ✅ Supported (flag: `dom.webgpu.enabled`) |
-| Safari | 18+ | ⚠️ Partial (WebGPU in preview) |
-| Node.js | — | ❌ Not supported (no `navigator.gpu`) |
+| Firefox | Nightly | ✅ (flag: `dom.webgpu.enabled`) |
+| Safari | 18+ | ⚠️ Partial |
+| Node.js | — | ❌ Not supported |
 
 ---
 
 ## Acknowledgements
 
-This library builds on the Mamba selective state space model research. Special credit to:
-
-- **Mamba 3** — Tri Dao's blog post [*Mamba 3, Part 1*](https://tridao.me/blog/2026/mamba3-part1/) (2026), which describes the latest architectural refinements.
-- **Mamba 3 paper** — [*Mamba: The Hard Way* (arXiv 2603.15569)](https://arxiv.org/abs/2603.15569), the accompanying technical paper.
-- Original **Mamba SSM** paper — [*Mamba: Linear-Time Sequence Modeling with Selective State Spaces* (arXiv 2312.00752)](https://arxiv.org/abs/2312.00752) by Gu & Dao (2023).
+- **Mamba-3** — Lahoti et al., *Mamba: The Hard Way* (arXiv 2603.15569, ICLR 2026)
+- **Mamba-2** — Dao & Gu, *Transformers are SSMs* (arXiv 2405.21060, 2024)
+- **Mamba-1** — Gu & Dao, *Mamba: Linear-Time Sequence Modeling with Selective State Spaces* (arXiv 2312.00752, 2023)
 
 ---
 

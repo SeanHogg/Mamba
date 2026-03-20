@@ -14,9 +14,9 @@ import {
 
 import { crossEntropyLoss, crossEntropyGrad } from './autograd.js';
 import { WEIGHT_UPDATE_WGSL, GRAD_CLIP_WGSL } from '../kernels/weight_update.js';
-import { MambaModel, MambaModelConfig } from '../model/mamba_model.js';
+import { HybridMambaModel, MambaModel } from '../model/mamba_model.js';
 import { BPETokenizer } from '../tokenizer/bpe.js';
-import { BlockParam } from '../model/mamba_block.js';
+import type { LayerParam as BlockParam } from '../model/sequence_layer.js';
 
 export interface TrainOptions {
   learningRate?: number;
@@ -47,11 +47,8 @@ interface AdamHyperparams {
   beta2_t: number;
 }
 
-// Re-export to satisfy import in other files
-export type { MambaModelConfig };
-
 export class MambaTrainer {
-    model: MambaModel;
+    model: HybridMambaModel;
     tokenizer: BPETokenizer | null;
     device: GPUDevice;
     private _moments: AdamMoments[] | null;
@@ -60,7 +57,7 @@ export class MambaTrainer {
     private _clipReducePipeline: GPUComputePipeline;
     private _clipScalePipeline: GPUComputePipeline;
 
-    constructor(model: MambaModel, tokenizer: BPETokenizer | null = null) {
+    constructor(model: HybridMambaModel | MambaModel, tokenizer: BPETokenizer | null = null) {
         this.model     = model;
         this.tokenizer = tokenizer;
         this.device    = model.device;

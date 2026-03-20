@@ -1,8 +1,26 @@
 /**
- * mamba_model.ts – Full Mamba language model.
+ * mamba_model.ts – HybridMambaModel: Mamba-1/2/3 and Attention layer scheduling.
+ *
+ * Replaces the fixed MambaBlock[] array with a SequenceLayer[] built from a
+ * per-layer type schedule.  MambaModel is kept as a backward-compatible alias
+ * (all-mamba1 schedule).
+ *
+ * MBJS binary format:
+ *   Version 1 (legacy): [magic][v=1][nParams][numel[]][ f32 data ]
+ *   Version 2 (new):    [magic][v=2][nLayers][layerType[]][padding][nParams][numel[]][ f32 data ]
+ *     layerType: 0=mamba1, 1=mamba2, 2=mamba3, 3=attention
  */
 
-import { MambaBlock, BlockCache, BlockParam } from './mamba_block.js';
+import { Mamba1Block }              from './mamba1_block.js';
+import { Mamba2Block }              from './mamba2_block.js';
+import { Mamba3Block }              from './mamba3_block.js';
+import { AttentionBlock }           from './attention_block.js';
+import type { SequenceLayer, LayerParam, LayerType } from './sequence_layer.js';
+import type { Mamba1BlockConfig }   from './mamba1_block.js';
+import type { Mamba2BlockConfig }   from './mamba2_block.js';
+import type { Mamba3BlockConfig }   from './mamba3_block.js';
+import type { AttentionBlockConfig } from './attention_block.js';
+
 import {
     createStorageBuffer,
     createEmptyStorageBuffer,
@@ -17,96 +35,210 @@ import {
 import { LINEAR_FORWARD_WGSL } from '../kernels/linear_projection.js';
 import { ACTIVATIONS_WGSL }    from '../kernels/activations.js';
 
+// ── Public types ──────────────────────────────────────────────────────────────
+
+export interface LayerSpec {
+    type    : LayerType;
+    config? : Partial<Mamba1BlockConfig | Mamba2BlockConfig | Mamba3BlockConfig | AttentionBlockConfig>;
+}
+
+export interface HybridMambaModelConfig {
+    vocabSize        : number;
+    dModel           : number;
+    numLayers        : number;
+
+    /**
+     * Per-layer type schedule.  Length must equal numLayers.
+     * Defaults to all 'mamba1' (backward-compatible).
+     */
+    layers?          : LayerSpec[];
+
+    // Shared defaults per variant type (individual LayerSpec.config overrides take precedence)
+    defaultMamba1?   : Partial<Mamba1BlockConfig>;
+    defaultMamba2?   : Partial<Mamba2BlockConfig>;
+    defaultMamba3?   : Partial<Mamba3BlockConfig>;
+    defaultAttention?: Partial<AttentionBlockConfig>;
+
+    // Mamba-1 compatible shorthand fields (applied to all mamba1 layers)
+    dState?          : number;
+    dConv?           : number;
+    expand?          : number;
+
+    // Mamba-2/3 defaults
+    nHeads?          : number;
+    nGroups?         : number;
+    chunkLen?        : number;
+    mimoGroup?       : number;
+
+    eosId?           : number;
+}
+
+/** Legacy Mamba-1-only config (fully backward-compatible). */
 export interface MambaModelConfig {
-  vocabSize: number;
-  dModel: number;
-  numLayers: number;
-  dState?: number;
-  dConv?: number;
-  expand?: number;
-  eosId?: number;
+    vocabSize  : number;
+    dModel     : number;
+    numLayers  : number;
+    dState?    : number;
+    dConv?     : number;
+    expand?    : number;
+    eosId?     : number;
 }
 
 export interface ModelForwardResult {
-  logits: Float32Array;
-  gpuLogits: GPUBuffer;
-  caches: BlockCache[];
+    logits    : Float32Array;
+    gpuLogits : GPUBuffer;
+    caches    : unknown[];
 }
 
 export interface SamplingOptions {
-  temperature?: number;
-  topK?: number;
-  topP?: number;
+    temperature? : number;
+    topK?        : number;
+    topP?        : number;
 }
 
-export class MambaModel {
-    device: GPUDevice;
-    config: Required<MambaModelConfig>;
-    gpuEmbedding: GPUBuffer;
-    blocks: MambaBlock[];
-    gpuFinalNorm: GPUBuffer;
-    tiedEmbedding: boolean;
-    gpuLMHeadBias: GPUBuffer;
-    private _lmHeadPipeline: GPUComputePipeline;
-    private _rmsnormPipeline: GPUComputePipeline;
-    private _embedPipeline: GPUComputePipeline;
+// ── MBJS format constants ─────────────────────────────────────────────────────
+
+const MBJS_MAGIC   = 0x4D424A53;  // 'MBJS'
+const LAYER_TYPE_ID: Record<LayerType, number> = {
+    mamba1   : 0,
+    mamba2   : 1,
+    mamba3   : 2,
+    attention: 3,
+};
+const ID_TO_LAYER_TYPE: LayerType[] = ['mamba1', 'mamba2', 'mamba3', 'attention'];
+
+// ── HybridMambaModel ──────────────────────────────────────────────────────────
+
+export class HybridMambaModel {
+    device        : GPUDevice;
+    config        : Required<HybridMambaModelConfig>;
+    gpuEmbedding  : GPUBuffer;
+    layers        : SequenceLayer[];
+    layerSpecs    : LayerSpec[];
+    gpuFinalNorm  : GPUBuffer;
+    tiedEmbedding : boolean;
+    gpuLMHeadBias : GPUBuffer;
+
+    private _lmHeadPipeline  : GPUComputePipeline;
+    private _rmsnormPipeline : GPUComputePipeline;
+    private _embedPipeline   : GPUComputePipeline;
     private _wslaMode = false;
 
-    constructor(device: GPUDevice, config: MambaModelConfig) {
+    constructor(device: GPUDevice, config: HybridMambaModelConfig) {
         this.device = device;
         this.config = {
-            dState    : 16,
-            dConv     : 4,
-            expand    : 2,
-            eosId     : -1,
+            dState        : 16,
+            dConv         : 4,
+            expand        : 2,
+            nHeads        : 4,
+            nGroups       : 1,
+            chunkLen      : 256,
+            mimoGroup     : 1,
+            eosId         : -1,
+            defaultMamba1 : {},
+            defaultMamba2 : {},
+            defaultMamba3 : {},
+            defaultAttention: {},
+            layers        : undefined as unknown as LayerSpec[],
             ...config,
-        } as Required<MambaModelConfig>;
+        } as Required<HybridMambaModelConfig>;
 
-        const { vocabSize, dModel, numLayers } = this.config;
+        // Resolve layer schedule
+        const layerSchedule: LayerSpec[] = config.layers
+            ?? Array.from({ length: config.numLayers }, () => ({ type: 'mamba1' as LayerType }));
 
+        if (layerSchedule.length !== config.numLayers) {
+            throw new Error(
+                `HybridMambaModel: layers schedule length (${layerSchedule.length}) must equal numLayers (${config.numLayers}).`
+            );
+        }
+        this.layerSpecs = layerSchedule;
+
+        // Embedding table
+        const { vocabSize, dModel } = this.config;
         const embedData = new Float32Array(vocabSize * dModel);
         const std = 1.0 / Math.sqrt(dModel);
         for (let i = 0; i < embedData.length; i++) {
             const u1 = Math.random(), u2 = Math.random();
-            embedData[i] = std * Math.sqrt(-2 * Math.log(u1 + 1e-12)) *
-                           Math.cos(2 * Math.PI * u2);
+            embedData[i] = std * Math.sqrt(-2 * Math.log(u1 + 1e-12)) * Math.cos(2 * Math.PI * u2);
         }
         this.gpuEmbedding = createStorageBuffer(device, embedData, true);
 
-        this.blocks = Array.from({ length: numLayers }, () =>
-            new MambaBlock(device, {
-                dModel,
-                dState  : this.config.dState,
-                dConv   : this.config.dConv,
-                expand  : this.config.expand,
-            })
-        );
+        // Build layers
+        this.layers = layerSchedule.map(spec => this._buildLayer(spec));
 
-        const finalNormW = new Float32Array(dModel).fill(1.0);
-        this.gpuFinalNorm = createStorageBuffer(device, finalNormW, true);
+        // Final RMSNorm
+        this.gpuFinalNorm = createStorageBuffer(device, new Float32Array(dModel).fill(1.0), true);
 
         this.tiedEmbedding = true;
+        this.gpuLMHeadBias = createStorageBuffer(device, new Float32Array(vocabSize), true);
 
         this._lmHeadPipeline  = createComputePipeline(device, LINEAR_FORWARD_WGSL, 'linear_forward');
         this._rmsnormPipeline = createComputePipeline(device, ACTIVATIONS_WGSL,    'rmsnorm_forward');
+        this._embedPipeline   = createComputePipeline(device, EMBED_LOOKUP_WGSL,   'embed_lookup');
+    }
 
-        this.gpuLMHeadBias = createStorageBuffer(device, new Float32Array(vocabSize), true);
-
-        this._embedPipeline = createComputePipeline(device, EMBED_LOOKUP_WGSL, 'embed_lookup');
+    private _buildLayer(spec: LayerSpec): SequenceLayer {
+        const c = this.config;
+        switch (spec.type) {
+            case 'mamba1': {
+                const base: Mamba1BlockConfig = {
+                    dModel : c.dModel,
+                    dState : c.dState,
+                    dConv  : c.dConv,
+                    expand : c.expand,
+                    ...c.defaultMamba1,
+                };
+                return new Mamba1Block(this.device, { ...base, ...(spec.config ?? {}) } as Mamba1BlockConfig);
+            }
+            case 'mamba2': {
+                const base: Mamba2BlockConfig = {
+                    dModel  : c.dModel,
+                    dState  : c.dState,
+                    dConv   : c.dConv,
+                    expand  : c.expand,
+                    nHeads  : c.nHeads,
+                    nGroups : c.nGroups,
+                    chunkLen: c.chunkLen,
+                    ...c.defaultMamba2,
+                };
+                return new Mamba2Block(this.device, { ...base, ...(spec.config ?? {}) } as Mamba2BlockConfig);
+            }
+            case 'mamba3': {
+                const base: Mamba3BlockConfig = {
+                    dModel   : c.dModel,
+                    dState   : c.dState,
+                    dConv    : c.dConv,
+                    expand   : c.expand,
+                    nHeads   : c.nHeads,
+                    nGroups  : c.nGroups,
+                    chunkLen : c.chunkLen,
+                    mimoGroup: c.mimoGroup,
+                    ...c.defaultMamba3,
+                };
+                return new Mamba3Block(this.device, { ...base, ...(spec.config ?? {}) } as Mamba3BlockConfig);
+            }
+            case 'attention': {
+                const base: AttentionBlockConfig = {
+                    dModel : c.dModel,
+                    nHeads : c.nHeads,
+                    ...c.defaultAttention,
+                };
+                return new AttentionBlock(this.device, { ...base, ...(spec.config ?? {}) } as AttentionBlockConfig);
+            }
+        }
     }
 
     embedTokens(tokenIds: number[] | Uint32Array, batch: number, seqLen: number): GPUBuffer {
         const { dModel } = this.config;
         const M = batch * seqLen;
 
-        const idsBuf  = createStorageBuffer(this.device,
+        const idsBuf = createStorageBuffer(this.device,
             tokenIds instanceof Uint32Array ? tokenIds : new Uint32Array(tokenIds), false);
-        const outBuf  = createEmptyStorageBuffer(this.device, M * dModel * 4, true);
+        const outBuf = createEmptyStorageBuffer(this.device, M * dModel * 4, true);
 
-        const params  = new Uint32Array([M, dModel]).buffer;
-        const pBuf    = createUniformBuffer(this.device, params);
-
-        const bg = createBindGroup(this.device, this._embedPipeline,
+        const pBuf = createUniformBuffer(this.device, new Uint32Array([M, dModel]).buffer);
+        const bg   = createBindGroup(this.device, this._embedPipeline,
             [pBuf, idsBuf, this.gpuEmbedding, outBuf]);
         dispatchKernel(this.device, this._embedPipeline, bg, [cdiv(M, 64), 1, 1]);
 
@@ -121,16 +253,17 @@ export class MambaModel {
 
         let hidden = this.embedTokens(tokenIds, batch, seqLen);
 
-        const caches: BlockCache[] = [];
-        for (const block of this.blocks) {
-            const { output, cache } = block.forward(hidden, batch, seqLen);
+        const caches: unknown[] = [];
+        for (const layer of this.layers) {
+            const { output, cache } = layer.forward(hidden, batch, seqLen);
             caches.push(cache);
             hidden.destroy();
             hidden = output;
         }
 
+        // Final RMSNorm
         const normOut = createEmptyStorageBuffer(this.device, M * dModel * 4, true);
-        const normInv = createEmptyStorageBuffer(this.device, M * 4,          false);
+        const normInv = createEmptyStorageBuffer(this.device, M * 4, false);
         {
             const params = new ArrayBuffer(16);
             new Uint32Array(params, 0, 2).set([M, dModel]);
@@ -140,23 +273,22 @@ export class MambaModel {
                 [pBuf, hidden, this.gpuFinalNorm, normOut, normInv]);
             dispatchKernel(this.device, this._rmsnormPipeline, bg, [cdiv(M, 64), 1, 1]);
         }
+        hidden.destroy();
 
+        // LM head (tied embedding)
         const gpuLogits = createEmptyStorageBuffer(this.device, M * vocabSize * 4, true);
         {
             const params = new Uint32Array([M, dModel, vocabSize]).buffer;
             const pBuf   = createUniformBuffer(this.device, params);
-            const weightBuf = this.tiedEmbedding ? this.gpuEmbedding : this.gpuLMHeadBias;
             const bg = createBindGroup(this.device, this._lmHeadPipeline,
-                [pBuf, normOut, weightBuf, this.gpuLMHeadBias, gpuLogits]);
+                [pBuf, normOut, this.gpuEmbedding, this.gpuLMHeadBias, gpuLogits]);
             dispatchKernel(this.device, this._lmHeadPipeline, bg,
                 [cdiv(M, 16), cdiv(vocabSize, 16), 1]);
         }
-
         normOut.destroy();
         normInv.destroy();
 
         const logits = await readBuffer(this.device, gpuLogits, M * vocabSize * 4);
-
         return { logits, gpuLogits, caches };
     }
 
@@ -167,22 +299,18 @@ export class MambaModel {
         let ids = [...promptIds];
 
         for (let step = 0; step < maxNewTokens; step++) {
-            const { logits } = await this.forward(
-                new Uint32Array(ids), 1, ids.length
-            );
+            const { logits } = await this.forward(new Uint32Array(ids), 1, ids.length);
             const lastLogits = logits.slice((ids.length - 1) * vocabSize, ids.length * vocabSize);
-
             const nextId = sampleToken(lastLogits, { temperature, topK, topP });
             ids.push(nextId);
-
             if (nextId === this.config.eosId) break;
         }
 
         return ids;
     }
 
-    parameters(): BlockParam[] {
-        const params: BlockParam[] = [];
+    parameters(): LayerParam[] {
+        const params: LayerParam[] = [];
 
         params.push({
             buf  : this.gpuEmbedding,
@@ -190,9 +318,9 @@ export class MambaModel {
             name : 'embedding',
         });
 
-        for (let i = 0; i < this.blocks.length; i++) {
-            for (const p of this.blocks[i]!.parameters()) {
-                params.push({ ...p, name: `block${i}.${p.name}` });
+        for (let i = 0; i < this.layers.length; i++) {
+            for (const p of this.layers[i]!.parameters()) {
+                params.push({ ...p, name: `layer${i}.${p.name}` });
             }
         }
 
@@ -206,114 +334,182 @@ export class MambaModel {
     }
 
     setWSLAMode(enabled: boolean): void {
-        for (const block of this.blocks) block.setWSLAMode(enabled);
+        for (const layer of this.layers) layer.setWSLAMode(enabled);
         this._wslaMode = enabled;
     }
 
+    // ── Serialisation (MBJS v2) ───────────────────────────────────────────────
+
     /**
-     * Serialise all model parameters to an ArrayBuffer.
+     * Export all parameters to an ArrayBuffer.
      *
-     * Binary format:
-     *   [0..3]   magic  : uint32  = 0x4D424A53 ('MBJS')
-     *   [4..7]   version: uint32  = 1
-     *   [8..11]  nParams: uint32
-     *   [12 .. 12+4*nParams-1]  numel[i]: uint32 for each parameter i
-     *   [12+4*nParams ..]       float32 data for each parameter, concatenated
-     *
-     * Save the returned buffer to a file or IndexedDB and reload it with
-     * `loadWeights()` to resume from a checkpoint.
+     * MBJS v2 format:
+     *   [0..3]   magic    : uint32 = 0x4D424A53
+     *   [4..7]   version  : uint32 = 2
+     *   [8..11]  nLayers  : uint32
+     *   [12 .. 12+nLayers-1]  layerType[i]: uint8 (0=m1, 1=m2, 2=m3, 3=attn)
+     *   aligned to 4 bytes: padding
+     *   [next 4] nParams  : uint32
+     *   [next 4*nParams]  numel[i]: uint32
+     *   [data]  float32 values
      */
     async exportWeights(): Promise<ArrayBuffer> {
-        const params = this.parameters();
-        const nParams = params.length;
+        const params   = this.parameters();
+        const nParams  = params.length;
+        const nLayers  = this.layers.length;
 
-        // Read all GPU buffers into CPU Float32Arrays
         const arrays: Float32Array[] = await Promise.all(
             params.map(p => readBuffer(this.device, p.buf, p.numel * 4))
         );
 
-        // Calculate total byte size: header + numel table + all float data
-        const headerBytes = 4 + 4 + 4 + nParams * 4;  // magic + version + nParams + numel[]
-        const dataBytes   = arrays.reduce((acc, a) => acc + a.byteLength, 0);
-        const out         = new ArrayBuffer(headerBytes + dataBytes);
-        const view        = new DataView(out);
+        // Header: magic(4) + version(4) + nLayers(4) + layerTypes(nLayers, padded to 4) + nParams(4) + numels(4*nParams)
+        const layerTypeBytes = Math.ceil(nLayers / 4) * 4;  // align to 4
+        const headerBytes    = 4 + 4 + 4 + layerTypeBytes + 4 + nParams * 4;
+        const dataBytes      = arrays.reduce((a, arr) => a + arr.byteLength, 0);
+        const out  = new ArrayBuffer(headerBytes + dataBytes);
+        const view = new DataView(out);
 
-        let offset = 0;
-        view.setUint32(offset, 0x4D424A53, true); offset += 4;  // magic 'MBJS'
-        view.setUint32(offset, 1,           true); offset += 4;  // version
-        view.setUint32(offset, nParams,     true); offset += 4;  // nParams
+        let off = 0;
+        view.setUint32(off, MBJS_MAGIC, true); off += 4;
+        view.setUint32(off, 2,           true); off += 4;   // version 2
+        view.setUint32(off, nLayers,     true); off += 4;
 
-        for (const p of params) {
-            view.setUint32(offset, p.numel, true);
-            offset += 4;
+        for (let i = 0; i < nLayers; i++) {
+            const lt = this.layers[i]!.layerType;
+            view.setUint8(off + i, LAYER_TYPE_ID[lt]);
         }
+        off += layerTypeBytes;
 
+        view.setUint32(off, nParams, true); off += 4;
+        for (const p of params) {
+            view.setUint32(off, p.numel, true);
+            off += 4;
+        }
         for (const arr of arrays) {
-            new Float32Array(out, offset, arr.length).set(arr);
-            offset += arr.byteLength;
+            new Float32Array(out, off, arr.length).set(arr);
+            off += arr.byteLength;
         }
 
         return out;
     }
 
     /**
-     * Load model parameters from an ArrayBuffer previously produced by
-     * `exportWeights()`.  The parameter count and element counts must match
-     * the current model configuration exactly.
+     * Load parameters from an MBJS v1 or v2 ArrayBuffer.
      *
-     * @throws {Error} if the magic number, version, or parameter layout do
-     *                 not match the current model.
+     * v1: assumes all layers are mamba1 (backward compatible).
+     * v2: reads layer type array and validates per-layer parameter counts.
      */
     async loadWeights(buffer: ArrayBuffer): Promise<void> {
-        const view    = new DataView(buffer);
-        let offset    = 0;
+        const view = new DataView(buffer);
+        let off    = 0;
 
-        const magic   = view.getUint32(offset, true); offset += 4;
-        if (magic !== 0x4D424A53) {
-            throw new Error(
-                'Invalid weight file: bad magic number. ' +
-                'Ensure the file was exported by MambaModel.exportWeights().'
-            );
+        const magic = view.getUint32(off, true); off += 4;
+        if (magic !== MBJS_MAGIC) {
+            throw new Error('Invalid weight file: bad magic number. Expected MBJS file.');
         }
 
-        const version = view.getUint32(offset, true); offset += 4;
-        if (version !== 1) {
-            throw new Error(`Unsupported weight file version: ${version}. Expected version 1.`);
-        }
+        const version = view.getUint32(off, true); off += 4;
 
-        const nParams = view.getUint32(offset, true); offset += 4;
-        const params  = this.parameters();
+        if (version === 1) {
+            // Legacy path: all-mamba1, no layer metadata
+            const nParams = view.getUint32(off, true); off += 4;
+            const params  = this.parameters();
 
-        if (nParams !== params.length) {
-            throw new Error(
-                `Weight file has ${nParams} parameters but this model has ${params.length}. ` +
-                'Ensure the model configuration matches the one used when exporting.'
-            );
-        }
-
-        const numels: number[] = [];
-        for (let i = 0; i < nParams; i++) {
-            numels.push(view.getUint32(offset, true));
-            offset += 4;
-        }
-
-        for (let i = 0; i < nParams; i++) {
-            // i is guaranteed in-bounds: nParams === params.length was verified above
-            const p      = params[i]!;
-            const numel  = numels[i]!;
-            if (numel !== p.numel) {
+            if (nParams !== params.length) {
                 throw new Error(
-                    `Parameter ${i} ("${p.name}") size mismatch: ` +
-                    `file has ${numel} elements, model expects ${p.numel}.`
+                    `Weight file has ${nParams} parameters but this model has ${params.length}.`
                 );
             }
 
-            const slice = new Float32Array(buffer, offset, p.numel);
-            uploadBuffer(this.device, p.buf, slice);
-            offset += p.numel * 4;
+            const numels: number[] = [];
+            for (let i = 0; i < nParams; i++) {
+                numels.push(view.getUint32(off, true));
+                off += 4;
+            }
+
+            for (let i = 0; i < nParams; i++) {
+                const p     = params[i]!;
+                const numel = numels[i]!;
+                if (numel !== p.numel) {
+                    throw new Error(`Parameter ${i} ("${p.name}") size mismatch: file=${numel}, model=${p.numel}.`);
+                }
+                uploadBuffer(this.device, p.buf, new Float32Array(buffer, off, p.numel));
+                off += p.numel * 4;
+            }
+            return;
         }
+
+        if (version === 2) {
+            const nLayers = view.getUint32(off, true); off += 4;
+
+            if (nLayers !== this.layers.length) {
+                throw new Error(`Weight file has ${nLayers} layers but this model has ${this.layers.length}.`);
+            }
+
+            // Read layer types and validate
+            for (let i = 0; i < nLayers; i++) {
+                const typeId = view.getUint8(off + i);
+                const expectedType = this.layers[i]!.layerType;
+                const fileType     = ID_TO_LAYER_TYPE[typeId] ?? 'mamba1';
+                if (fileType !== expectedType) {
+                    throw new Error(
+                        `Layer ${i} type mismatch: file="${fileType}", model="${expectedType}".`
+                    );
+                }
+            }
+            const layerTypeBytes = Math.ceil(nLayers / 4) * 4;
+            off += layerTypeBytes;
+
+            const nParams = view.getUint32(off, true); off += 4;
+            const params  = this.parameters();
+
+            if (nParams !== params.length) {
+                throw new Error(
+                    `Weight file has ${nParams} parameters but this model has ${params.length}.`
+                );
+            }
+
+            const numels: number[] = [];
+            for (let i = 0; i < nParams; i++) {
+                numels.push(view.getUint32(off, true));
+                off += 4;
+            }
+
+            for (let i = 0; i < nParams; i++) {
+                const p     = params[i]!;
+                const numel = numels[i]!;
+                if (numel !== p.numel) {
+                    throw new Error(`Parameter ${i} ("${p.name}") size mismatch: file=${numel}, model=${p.numel}.`);
+                }
+                uploadBuffer(this.device, p.buf, new Float32Array(buffer, off, p.numel));
+                off += p.numel * 4;
+            }
+            return;
+        }
+
+        throw new Error(`Unsupported MBJS version: ${version}. Expected 1 or 2.`);
+    }
+
+    destroy(): void {
+        this.gpuEmbedding.destroy();
+        for (const layer of this.layers) layer.destroy();
+        this.gpuFinalNorm.destroy();
+        this.gpuLMHeadBias.destroy();
     }
 }
+
+// ── MambaModel – backward-compatible alias ────────────────────────────────────
+
+export class MambaModel extends HybridMambaModel {
+    constructor(device: GPUDevice, config: MambaModelConfig) {
+        super(device, {
+            ...config,
+            layers: Array.from({ length: config.numLayers }, () => ({ type: 'mamba1' as LayerType })),
+        });
+    }
+}
+
+// ── Embed lookup WGSL ─────────────────────────────────────────────────────────
 
 const EMBED_LOOKUP_WGSL: string = /* wgsl */`
 struct EmbedParams {
@@ -342,6 +538,8 @@ fn embed_lookup(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
+// ── Token sampling ────────────────────────────────────────────────────────────
+
 function sampleToken(logits: Float32Array, { temperature = 1.0, topK = 50, topP = 0.9 } = {}): number {
     const n = logits.length;
 
@@ -354,14 +552,12 @@ function sampleToken(logits: Float32Array, { temperature = 1.0, topK = 50, topP 
     const exps = new Float32Array(n);
     for (let i = 0; i < n; i++) { exps[i] = Math.exp(scaled[i]! - maxL); sumE += exps[i]!; }
 
-    const indices = Array.from({ length: n }, (_, i) => i)
-        .sort((a, b) => exps[b]! - exps[a]!);
-
-    const topKIndices = indices.slice(0, topK);
+    const indices = Array.from({ length: n }, (_, i) => i).sort((a, b) => exps[b]! - exps[a]!);
+    const topKIdx = indices.slice(0, topK);
 
     let cumSum = 0;
     const nucleus: number[] = [];
-    for (const idx of topKIndices) {
+    for (const idx of topKIdx) {
         cumSum += exps[idx]! / sumE;
         nucleus.push(idx);
         if (cumSum >= topP) break;
