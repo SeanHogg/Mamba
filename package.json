@@ -1,14 +1,14 @@
 {
   "name": "mambacode.js",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "High-performance TypeScript/WGSL Mamba SSM library for browser-based code model training and inference",
   "main": "dist/index.js",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     }
   },
   "type": "module",

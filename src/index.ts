@@ -55,5 +55,5 @@ export { WEIGHT_UPDATE_WGSL, GRAD_CLIP_WGSL }
 export { ACTIVATIONS_WGSL, ACTIVATIONS_BACKWARD_WGSL }
     from './kernels/activations';
 
-export const VERSION = '0.1.0';
+export const VERSION = '1.0.1';
 export const DESCRIPTION = 'MambaCode.js: WebGPU-accelerated Mamba SSM for browser code models';
