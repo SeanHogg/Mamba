@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MambaKit — Pretrain</title>
+  <title>MambaCode.js — Pretrain</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -107,7 +107,7 @@
 <body>
 
 <header>
-  <h1>MambaKit Pretrain</h1>
+  <h1>MambaCode.js Pretrain</h1>
   <span class="badge">Tool</span>
   <div id="status-dot"></div>
 </header>
@@ -123,6 +123,17 @@
         <option value="small">small — ~20 M params</option>
         <option value="medium">medium — ~50 M params</option>
         <option value="large">large — ~120 M params</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>SSM variant</label>
+      <select id="mamba-type">
+        <option value="mamba1">Mamba-1 (S6 — default, checkpoint compatible)</option>
+        <option value="mamba2">Mamba-2 (SSD — better GPU throughput)</option>
+        <option value="mamba3">Mamba-3 (complex states — 2× smaller state)</option>
+        <option value="jamba">Jamba hybrid (every 4th = attention + Mamba-2)</option>
+        <option value="zamba">Zamba hybrid (every 6th = attention + Mamba-3)</option>
       </select>
     </div>
 
@@ -194,9 +205,9 @@ Recommended for general language:
 
 After training:
   1. Download the .bin checkpoint
-  2. Upload to https://huggingface.co/SeanHogg/mambakit-nano
-  3. Set DEFAULT_CHECKPOINT_URL in src/kit/session.ts
-  4. MambaSession.create({}) will download it automatically"></textarea>
+  2. Upload to HuggingFace or your preferred host
+  3. Set DEFAULT_CHECKPOINT_URL in MambaKit's src/kit/session.ts (if using MambaKit)
+  4. Or load directly in your app via model.loadWeights(await fetch(url).then(r => r.arrayBuffer()))"></textarea>
     <div id="chart-wrap">
       <h3>Training Loss</h3>
       <canvas id="loss-chart"></canvas>
@@ -210,19 +221,69 @@ After training:
   </div>
 </div>
 
-<script type="importmap">
-{
-  "imports": {
-    "mambacode.js": "/node_modules/mambacode.js/dist/index.js"
-  }
-}
-</script>
 <script type="module">
-  import { MambaSession } from '../dist/kit/index.js';
+  import { initWebGPU, BPETokenizer, HybridMambaModel, MambaTrainer } from '../dist/index.js';
+
+  // ── Tokenizer vocab (Qwen2.5-Coder, loaded from HuggingFace) ─────────────
+  const VOCAB_URL  = 'https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct/resolve/main/vocab.json';
+  const MERGES_URL = 'https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct/resolve/main/merges.txt';
+
+  // ── Model size presets ────────────────────────────────────────────────────
+  const MODEL_PRESETS = {
+    nano  : { dModel: 128,  numLayers: 4,  nHeads: 4  },
+    small : { dModel: 256,  numLayers: 6,  nHeads: 8  },
+    medium: { dModel: 512,  numLayers: 8,  nHeads: 8  },
+    large : { dModel: 768,  numLayers: 12, nHeads: 12 },
+  };
+
+  // ── Layer schedule helpers ────────────────────────────────────────────────
+  function resolveSchedule(type, numLayers) {
+    if (type === 'jamba') {
+      return Array.from({ length: numLayers }, (_, i) =>
+        ({ type: i % 4 === 3 ? 'attention' : 'mamba2' })
+      );
+    }
+    if (type === 'zamba') {
+      return Array.from({ length: numLayers }, (_, i) =>
+        ({ type: i % 6 === 5 ? 'attention' : 'mamba3' })
+      );
+    }
+    return Array(numLayers).fill({ type });
+  }
+
+  // ── IndexedDB save/load helpers ───────────────────────────────────────────
+  function idbOpen() {
+    return new Promise((res, rej) => {
+      const req = indexedDB.open('mambacode', 1);
+      req.onupgradeneeded = e => e.target.result.createObjectStore('checkpoints');
+      req.onsuccess = e => res(e.target.result);
+      req.onerror   = rej;
+    });
+  }
+
+  async function idbSave(key, buf) {
+    const db = await idbOpen();
+    return new Promise((res, rej) => {
+      const tx = db.transaction('checkpoints', 'readwrite');
+      tx.objectStore('checkpoints').put(buf, key);
+      tx.oncomplete = res;
+      tx.onerror    = rej;
+    });
+  }
+
+  async function idbLoad(key) {
+    const db = await idbOpen();
+    return new Promise((res, rej) => {
+      const req = db.transaction('checkpoints', 'readonly').objectStore('checkpoints').get(key);
+      req.onsuccess = e => res(e.target.result ?? null);
+      req.onerror   = rej;
+    });
+  }
 
   // ── Elements ──────────────────────────────────────────────────────────────
   const statusDot      = document.getElementById('status-dot');
   const modelSizeEl    = document.getElementById('model-size');
+  const mambaTypeEl    = document.getElementById('mamba-type');
   const checkpointUrl  = document.getElementById('checkpoint-url');
   const epochsEl       = document.getElementById('epochs');
   const seqLenEl       = document.getElementById('seq-len');
@@ -258,7 +319,6 @@ After training:
   // ── Corpus meta ───────────────────────────────────────────────────────────
   function updateMeta() {
     const chars  = corpusEl.value.length;
-    // rough token estimate: ~4 chars per token
     const tokens = Math.round(chars / 4);
     corpusMeta.textContent = `${chars.toLocaleString()} chars · ~${tokens.toLocaleString()} tokens`;
     startBtn.disabled = chars < 500;
@@ -341,20 +401,17 @@ After training:
 
       const json = await res.json();
       const rows = json.rows ?? [];
-      if (rows.length === 0) break;  // end of dataset
+      if (rows.length === 0) break;
 
       for (const { row } of rows) {
         const text = row[field] ?? '';
-        if (text.length > 10) {
-          accumulated += text + '\n\n';
-        }
+        if (text.length > 10) accumulated += text + '\n\n';
       }
 
       offset += rows.length;
       const pct = Math.min(100, Math.round((accumulated.length / targetChars) * 100));
       datasetProgressTxt.textContent = `Loaded ${offset.toLocaleString()} rows · ${(accumulated.length / 1000).toFixed(0)} KB · ${pct}%`;
 
-      // Yield to UI between batches
       await new Promise(r => setTimeout(r, 0));
     }
 
@@ -374,7 +431,6 @@ After training:
 
     try {
       if (ds.directUrl) {
-        // Direct file fetch (TinyStories validation split)
         datasetProgress.style.display = 'flex';
         datasetProgressTxt.textContent = 'Fetching…';
         const res = await fetch(ds.directUrl);
@@ -382,7 +438,6 @@ After training:
         corpusEl.value = await res.text();
         datasetProgressTxt.textContent = '✓ Loaded';
       } else {
-        // HuggingFace Datasets Server API streaming
         datasetProgress.style.display = 'flex';
         datasetProgressTxt.textContent = 'Starting…';
         const text = await streamDataset(ds.api, ds.targetChars);
@@ -441,10 +496,10 @@ After training:
 
   new ResizeObserver(resizeChart).observe(lossChart);
 
-  // ── Training state ────────────────────────────────────────────────────────
-  let session   = null;
-  let stopFlag  = false;
-  const STAGE_OFFSETS = { gpu: 0, tokenizer: 25, model: 50, weights: 75 };
+  // ── Session state ─────────────────────────────────────────────────────────
+  let model    = null;
+  let trainer  = null;
+  let stopFlag = false;
 
   // ── Start training ────────────────────────────────────────────────────────
   startBtn.addEventListener('click', async () => {
@@ -464,31 +519,46 @@ After training:
     const lr       = Math.pow(10, parseFloat(lrEl.value));
     const corpus   = corpusEl.value;
     const mSize    = modelSizeEl.value;
+    const mType    = mambaTypeEl.value;
 
     try {
-      // Build / reload session
-      session = await MambaSession.create(
-        {
-          modelSize  : mSize,
-          ...(ckUrl ? { checkpointUrl: ckUrl } : {}),
-        },
-        {
-          onProgress({ stage, progress, message }) {
-            statStep.textContent = message;
-          },
-        },
-      );
+      statStep.textContent = 'Initialising WebGPU…';
+      const { device } = await initWebGPU({ powerPreference: 'high-performance' });
+
+      statStep.textContent = 'Loading tokenizer…';
+      const tokenizer = new BPETokenizer();
+      await tokenizer.load(VOCAB_URL, MERGES_URL);
+
+      statStep.textContent = 'Building model…';
+      const preset   = MODEL_PRESETS[mSize];
+      const schedule = resolveSchedule(mType, preset.numLayers);
+
+      model = new HybridMambaModel(device, {
+        vocabSize : tokenizer.vocabSize,
+        dModel    : preset.dModel,
+        numLayers : preset.numLayers,
+        nHeads    : preset.nHeads,
+        layers    : schedule,
+      });
+
+      if (ckUrl) {
+        statStep.textContent = 'Loading checkpoint…';
+        const buf = await (await fetch(ckUrl)).arrayBuffer();
+        await model.loadWeights(buf);
+      }
 
       statusDot.className = 'ready';
+      statStep.textContent = 'Training…';
+
+      trainer = new MambaTrainer(model, tokenizer);
       const startMs = Date.now();
 
-      // Full training (not WSLA) — learn language structure
-      await session.adapt(corpus, {
-        fullTrain  : true,   // wsla=false, learns all weights
+      await trainer.train(corpus, {
+        wsla        : false,
         epochs,
         learningRate: lr,
         seqLen,
-        onProgress(epoch, loss) {
+        onEpochEnd(epoch, loss) {
           if (stopFlag) throw new Error('Stopped by user');
           losses.push(loss);
           drawChart();
@@ -510,7 +580,7 @@ After training:
       } else {
         statusDot.className = 'ready';
         statStep.textContent = 'Stopped';
-        if (session) { saveIdbBtn.disabled = false; saveDlBtn.disabled = false; }
+        if (model) { saveIdbBtn.disabled = false; saveDlBtn.disabled = false; }
       }
     } finally {
       startBtn.disabled = false;
@@ -522,13 +592,14 @@ After training:
 
   // ── Save ──────────────────────────────────────────────────────────────────
   saveIdbBtn.addEventListener('click', async () => {
-    if (!session) return;
+    if (!model) return;
     saveIdbBtn.disabled = true;
     saveDlBtn.disabled  = true;
     saveStatus.textContent = 'Saving…';
     try {
-      await session.save({ storage: 'indexedDB', key: 'mambakit-default' });
-      saveStatus.textContent = '✓ Saved. Open Chatbot or Code Completion → Advanced → Load from browser storage.';
+      const buf = model.exportWeights();
+      await idbSave('mambacode-default', buf);
+      saveStatus.textContent = '✓ Saved to browser storage (key: mambacode-default).';
     } catch (err) {
       saveStatus.textContent = `Error: ${err.message}`;
     } finally {
@@ -538,13 +609,18 @@ After training:
   });
 
   saveDlBtn.addEventListener('click', async () => {
-    if (!session) return;
+    if (!model) return;
     saveIdbBtn.disabled = true;
     saveDlBtn.disabled  = true;
     saveStatus.textContent = 'Preparing download…';
     try {
-      await session.save({ storage: 'download', filename: 'mambakit-pretrained.bin' });
-      saveStatus.textContent = '✓ Downloaded. Load via Advanced → Checkpoint URL in any example.';
+      const buf  = model.exportWeights();
+      const blob = new Blob([buf], { type: 'application/octet-stream' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href = url; a.download = 'mambacode-pretrained.bin'; a.click();
+      URL.revokeObjectURL(url);
+      saveStatus.textContent = '✓ Downloaded.';
     } catch (err) {
       saveStatus.textContent = `Error: ${err.message}`;
     } finally {

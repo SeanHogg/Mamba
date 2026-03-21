@@ -1,5 +1,5 @@
 {
-  "name": "mambacode.js",
+  "name": "@seanhogg/mambacode.js",
   "version": "1.0.2",
   "description": "High-performance TypeScript/WGSL Mamba SSM library for browser-based code model training and inference",
   "main": "dist/index.js",
@@ -20,6 +20,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "serve": "node serve.js",
     "test": "node --experimental-vm-modules node_modules/.bin/jest",
     "lint": "eslint src/ tests/",
     "prepublishOnly": "npm run build"
@@ -33,17 +34,18 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/SeanHogg/Mamba.git"
+    "url": "https://github.com/SeanHogg/mambacodejs.git"
   },
   "bugs": {
-    "url": "https://github.com/SeanHogg/Mamba/issues"
+    "url": "https://github.com/SeanHogg/mambacodejs/issues"
   },
-  "homepage": "https://github.com/SeanHogg/Mamba#readme",
+  "homepage": "https://github.com/SeanHogg/mambacodejs#readme",
   "engines": {
     "node": ">=18.0.0"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "registry": "https://npm.pkg.github.com"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",

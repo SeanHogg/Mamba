@@ -7,5 +7,5 @@ node_modules/
 dist/
 build/
 
-# LangGraph (inherited from template)
-.langgraph_api/
+# npm pack artifacts
+*.tgz

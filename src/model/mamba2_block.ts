@@ -70,11 +70,7 @@ export class Mamba2Block implements SequenceLayer {
     constructor(device: GPUDevice, config: Mamba2BlockConfig) {
         this.device = device;
         this.config = {
-            dState  : 16,
-            dConv   : 4,
-            expand  : 2,
-            nGroups : 1,
-            chunkLen: 256,
+            ...{ dState: 16, dConv: 4, expand: 2, nGroups: 1, chunkLen: 256 },
             ...config,
         } as Required<Mamba2BlockConfig>;
 

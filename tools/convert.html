@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MambaKit — Convert state-spaces/mamba to MBJS</title>
+  <title>MambaCode.js — Convert state-spaces/mamba to MBJS</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -121,16 +121,15 @@
     <div class="info">
       <strong>state-spaces/mamba</strong> models use the same Mamba SSM architecture as mambacode.js.
       This converter reads their <code>.safetensors</code> weights and writes them in the
-      <strong>MBJS binary format</strong> that MambaKit can load.<br><br>
+      <strong>MBJS binary format</strong> that mambacode.js can load.<br><br>
       Qwen2.5-Coder is a <em>Transformer</em> — different architecture, cannot be converted.
-      The only part of Qwen used in MambaKit is the <strong>tokenizer vocabulary</strong>, already built in.
+      The only part of Qwen used in mambacode.js / MambaKit is the <strong>tokenizer vocabulary</strong>.
     </div>
     <div class="warning">
       <strong>Vocabulary mismatch:</strong> state-spaces/mamba was trained with the GPT-NeoX tokenizer
-      (50,257 tokens). MambaKit uses Qwen2.5-Coder (151,936 tokens). The SSM layers transfer cleanly;
+      (50,257 tokens). mambacode.js uses Qwen2.5-Coder (151,936 tokens). The SSM layers transfer cleanly;
       the embedding table is padded with initialised values for the extra Qwen tokens.
-      Run a few passes through <strong>pretrain.html</strong> or <strong>Knowledge Base</strong>
-      after converting to adapt the embeddings.
+      Run a few passes through <strong>pretrain.html</strong> after converting to warm up the new token slots.
     </div>
   </div>
 
@@ -184,9 +183,9 @@
       <button id="save-idb-btn">Save to browser storage</button>
     </div>
     <p style="margin-top:12px;font-size:0.78rem;color:#4ade80;">
-      After saving, open <strong>Chatbot</strong> or <strong>Code Completion</strong>
-      → Advanced → Load from browser storage.<br>
-      Then use <strong>Knowledge Base</strong> to fine-tune on your domain content.
+      After saving, load in your app via <code>model.loadWeights()</code> or open
+      <strong>pretrain.html</strong> to continue training on your corpus.<br>
+      Using MambaKit? Load via <code>session.load({ storage: 'indexedDB' })</code>.
     </p>
   </div>
 
@@ -275,19 +274,29 @@ function detectConfig(header) {
   return { dModel, numLayers, dInner, dConv, dState, expand, dtRank, origVocab };
 }
 
-// ── Write MBJS binary ─────────────────────────────────────────────────────────
-function writeMbjs(paramList) {
+// ── Write MBJS v2 binary ──────────────────────────────────────────────────────
+// All converted state-spaces/mamba checkpoints are Mamba-1 (layerType=0).
+function writeMbjs(paramList, numLayers) {
+  // Pad layerType bytes to 4-byte alignment
+  const typeByteLen = Math.ceil(numLayers / 4) * 4;
+
   const totalFloats = paramList.reduce((s, p) => s + p.data.length, 0);
   const nParams     = paramList.length;
-  const headerBytes = 12 + nParams * 4;
+
+  // Header: magic(4) + version(4) + nLayers(4) + layerTypes(typeByteLen) + nParams(4) + numels(nParams*4)
+  const headerBytes = 12 + typeByteLen + 4 + nParams * 4;
   const buf         = new ArrayBuffer(headerBytes + totalFloats * 4);
   const view        = new DataView(buf);
 
-  view.setUint32(0, 0x4D424A53, true); // 'MBJS'
-  view.setUint32(4, 1,          true); // version
-  view.setUint32(8, nParams,    true);
+  view.setUint32(0,  0x4D424A53, true); // 'MBJS'
+  view.setUint32(4,  2,          true); // version 2
+  view.setUint32(8,  numLayers,  true); // nLayers
 
-  let pos = 12;
+  // layerType bytes — all 0 (mamba1) for state-spaces/mamba converted checkpoints
+  // (bytes default to 0 in ArrayBuffer, no writes needed)
+
+  let pos = 12 + typeByteLen;
+  view.setUint32(pos, nParams, true); pos += 4;
   for (const p of paramList) { view.setUint32(pos, p.data.length, true); pos += 4; }
 
   const f32out = new Float32Array(buf, headerBytes);
@@ -400,7 +409,7 @@ function convert(st, cfg, onProgress) {
   const finalNorm = getTensor(st, 'backbone.norm_f.weight');
   params.push({ name: 'final_norm', data: finalNorm ? finalNorm.data : ones(dModel) });
 
-  return writeMbjs(params);
+  return writeMbjs(params, numLayers);
 }
 
 // ── UI ────────────────────────────────────────────────────────────────────────
@@ -499,9 +508,9 @@ convertBtn.addEventListener('click', async () => {
 
     const sizeMb = (mbjsBuffer.byteLength / 1024 / 1024).toFixed(0);
     resultText.textContent =
-      `Converted ${detectedCfg.numLayers}-layer Mamba model (d_model=${detectedCfg.dModel}) to MBJS format. ` +
+      `Converted ${detectedCfg.numLayers}-layer Mamba-1 model (d_model=${detectedCfg.dModel}) to MBJS v2 format. ` +
       `Size: ${sizeMb} MB. The embedding table has been padded from ${detectedCfg.origVocab.toLocaleString()} ` +
-      `to ${QWEN_VOCAB.toLocaleString()} tokens — run a few Knowledge Base ingestions to warm up the new token slots.`;
+      `to ${QWEN_VOCAB.toLocaleString()} tokens — run a few passes through pretrain.html to warm up the new token slots.`;
     resultEl.classList.add('visible');
     progressBar.style.width = '100%';
     progressLabel.textContent = 'Done';
@@ -527,12 +536,12 @@ saveIdbBtn.addEventListener('click', async () => {
   saveIdbBtn.disabled = true;
   try {
     await new Promise((resolve, reject) => {
-      const req = indexedDB.open('mambakit', 1);
+      const req = indexedDB.open('mambacode', 1);
       req.onupgradeneeded = e => e.target.result.createObjectStore('checkpoints');
       req.onsuccess = e => {
         const db  = e.target.result;
         const tx  = db.transaction('checkpoints', 'readwrite');
-        tx.objectStore('checkpoints').put(mbjsBuffer, 'mambakit-default');
+        tx.objectStore('checkpoints').put(mbjsBuffer, 'mambacode-default');
         tx.oncomplete = resolve;
         tx.onerror    = reject;
       };
